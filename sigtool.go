@@ -25,7 +25,7 @@ import (
 )
 
 // This will be filled in by "build"
-var Version string = "UNDEFINED"
+var Version string = "1.0"
 
 var Z string = path.Base(os.Args[0])
 
@@ -256,7 +256,7 @@ func main() {
             ox, err := sspec.Interpret(opts.Args, env)
             if err != nil { die("%s", err) }
             signify(sspec, ox)
-        
+
         case "verify":
             ox, err := vspec.Interpret(opts.Args, env)
             if err != nil { die("%s", err) }
@@ -267,3 +267,5 @@ func main() {
     }
 
 }
+
+// vim: ft=go:sw=4:ts=4:expandtab:tw=78:
