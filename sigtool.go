@@ -203,11 +203,12 @@ func verify(s *options.Spec, opt *options.Options) {
     fn := opt.Args[2]
 
     sig, err := sign.ReadSignature(sn)
-    if err != nil { die("%s: Can't read signature %s: %s", Z, sn, err) }
-
+    if err != nil { die("%s: Can't read signature '%s': %s", Z, sn, err) }
 
     pk, err := sign.ReadPublicKey(pn)
     if err != nil { die("%s: %s", Z, err) }
+
+    if !sig.IsPKMatch(pk) { die("Wrong public key '%s' for verifying '%s'", pn, sn) }
 
     ok, err := pk.VerifyFile(fn, sig)
     if err != nil { die("%s: %s", Z, err) }
