@@ -86,7 +86,6 @@ help     -h,--help         Show this help message and exit
 pw       -p,--passwd       Ask for a passphrase to decrypt the private key
 envpw=   -e=E,--env-pass=E Use passphrase from environment var E []
 output=- -o=F,--output=F   Write signature to file F [STDOUT]
-noserial  --no-serialize   Don't serialize the signature [False]
 --
 --
 *
