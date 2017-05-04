@@ -23,3 +23,7 @@ _testmain.go
 *.test
 *.prof
 vendor/*
+
+# gg vendor management
+vendor/src/*
+vendor/pkg/*
