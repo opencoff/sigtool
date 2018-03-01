@@ -24,6 +24,13 @@ _testmain.go
 *.prof
 vendor/*
 
-# gg vendor management
+# vendor management
 vendor/src/*
 vendor/pkg/*
+src/*
+bin/*
+
+.??*.sw?
+*.pub
+*.key
+*.sig

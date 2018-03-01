@@ -3,7 +3,7 @@
 //
 // (c) 2016 Sudhi Herle <sudhi@herle.net>
 //
-// Licensing Terms: GPLv2 
+// Licensing Terms: GPLv2
 //
 // If you need a commercial license for this work, please contact
 // the author.
@@ -13,15 +13,16 @@
 // suitability for any purpose.
 
 package main
-import (
-    "os"
-    "io"
-    "fmt"
-    "path"
 
-    // Our pkg
-    "github.com/opencoff/go-lib/options"
-    "github.com/opencoff/go-lib/sign"
+import (
+	"fmt"
+	"io"
+	"os"
+	"path"
+
+	"github.com/opencoff/go-options"
+	"github.com/opencoff/go-sign"
+	"github.com/opencoff/go-utils"
 )
 
 // This will be filled in by "build"
@@ -31,14 +32,15 @@ var Z string = path.Base(os.Args[0])
 
 // die with error
 func die(f string, v ...interface{}) {
-    z := fmt.Sprintf("%s: %s", Z, f)
-    s := fmt.Sprintf(z, v...)
-    if n := len(s); s[n-1] != '\n' { s += "\n" }
+	z := fmt.Sprintf("%s: %s", Z, f)
+	s := fmt.Sprintf(z, v...)
+	if n := len(s); s[n-1] != '\n' {
+		s += "\n"
+	}
 
-    os.Stderr.WriteString(s)
-    os.Exit(1)
+	os.Stderr.WriteString(s)
+	os.Exit(1)
 }
-
 
 // Option parsing spec for the main program
 var Maindesc = fmt.Sprintf(`
@@ -57,7 +59,6 @@ sign   sign, s           Sign a file with a private key
 verify verify, v         Verify a signature against a file and public key
 --`, Z, Z)
 
-
 // Option parsing spec for key gen
 var Gendesc = fmt.Sprintf(`
 Usage: %s generate [options] path-prefix
@@ -70,6 +71,7 @@ help     -h,--help         Show this help message and exit
 pw       -p,--passwd       Ask for a passphrase to encrypt the private key
 comment= -c=,--comment=    Use 'C' as the text comment for the keys []
 envpw=   -e=E,--env-pass=E Use passphrase from environment var E []
+force    -F,--force        Overwrite the output file if it exists [false]
 --
 --
 *
@@ -91,7 +93,6 @@ output=- -o=F,--output=F   Write signature to file F [STDOUT]
 *
 --`, Z)
 
-
 // Option parsing spec for signature verification
 var Verifydesc = fmt.Sprintf(`
 Usage: %s verify [options] pubkey sig file
@@ -106,166 +107,213 @@ quiet    -q,--quiet       Don't show any output, exit with status code
 *
 --`, Z)
 
-
-
-
 // Run the generate command
 func gen(s *options.Spec, opt *options.Options) {
-    if opt.GetBool("help") {
-        s.PrintUsageAndExit()
-    }
+	if opt.GetBool("help") {
+		s.PrintUsageAndExit()
+	}
 
-    if len(opt.Args) < 1 {
-        s.PrintUsageWithError(fmt.Errorf("Missing path-prefix."))
-    }
-    
+	if len(opt.Args) < 1 {
+		s.PrintUsageWithError(fmt.Errorf("Missing path-prefix."))
+	}
 
-    var pw string
-    var comm string
-    var err error
+	bn := opt.Args[0]
 
-    if pwenv, ok := opt.Get("envpw"); ok {
-        pw = os.Getenv(pwenv)
-    } else if opt.GetBool("pw") {
-        pw, err = sign.Askpass("Enter passphrase for private key", true)
-        if err != nil { die("%s: %s", Z, err) }
-    }
+	if exists(bn) && !opt.GetBool("force") {
+		die("%s: Public/Private key files (%s.key, %s.pub) exist. Won't overwrite!", Z, bn, bn)
+	}
 
-    comm, _ = opt.Get("comment")
+	var pw string
+	var comm string
+	var err error
 
-    kp, err := sign.NewKeypair()
-    if err != nil { die("%s: %s", Z, err) }
+	if pwenv, ok := opt.Get("envpw"); ok {
+		pw = os.Getenv(pwenv)
+	} else if opt.GetBool("pw") {
+		pw, err = utils.Askpass("Enter passphrase for private key", true)
+		if err != nil {
+			die("%s: %s", Z, err)
+		}
+	}
 
-    bn := opt.Args[0]
+	comm, _ = opt.Get("comment")
 
-    err = kp.Serialize(bn, comm, pw)
-    if err != nil { die("%s: %s", Z, err) }
+	kp, err := sign.NewKeypair()
+	if err != nil {
+		die("%s: %s", Z, err)
+	}
+
+	err = kp.Serialize(bn, comm, pw)
+	if err != nil {
+		die("%s: %s", Z, err)
+	}
 }
 
+// Return true if $bn.key or $bn.pub exist; false otherwise
+func exists(bn string) bool {
+	pk := bn + ".pub"
+	sk := bn + ".key"
+
+	if _, err := os.Stat(pk); err == nil {
+		return true
+	}
+	if _, err := os.Stat(sk); err == nil {
+		return true
+	}
+
+	return false
+}
 
 // Run the 'sign' command.
 func signify(s *options.Spec, opt *options.Options) {
-    if opt.GetBool("help") {
-        s.PrintUsageAndExit()
-    }
+	if opt.GetBool("help") {
+		s.PrintUsageAndExit()
+	}
 
-    if len(opt.Args) < 2 {
-        s.PrintUsageWithError(fmt.Errorf("Missing arguments (key? file?)"))
-    }
-    
-    var pw string
-    var err error
-    var fd io.Writer = os.Stdout
+	if len(opt.Args) < 2 {
+		s.PrintUsageWithError(fmt.Errorf("Missing arguments (key? file?)"))
+	}
 
-    if pwenv, ok := opt.Get("envpw"); ok {
-        pw = os.Getenv(pwenv)
-    } else if opt.GetBool("pw") {
-        pw, err = sign.Askpass("Enter passphrase for private key", false)
-        if err != nil { die("%s: %s", Z, err) }
-    }
+	var pw string
+	var err error
+	var fd io.Writer = os.Stdout
 
-    if outf, ok := opt.Get("output"); ok {
-        if outf != "-" {
-            fdx, err := os.OpenFile(outf, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
-            if err != nil { die("%s: Can't create output file %s: %s", Z, outf, err) }
-            defer fdx.Close()
-            
-            fd = fdx
-        }
-    }
+	if pwenv, ok := opt.Get("envpw"); ok {
+		pw = os.Getenv(pwenv)
+	} else if opt.GetBool("pw") {
+		pw, err = utils.Askpass("Enter passphrase for private key", false)
+		if err != nil {
+			die("%s: %s", Z, err)
+		}
+	}
 
-    kn := opt.Args[0]
-    fn := opt.Args[1]
+	if outf, ok := opt.Get("output"); ok {
+		if outf != "-" {
+			fdx, err := os.OpenFile(outf, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
+			if err != nil {
+				die("%s: Can't create output file %s: %s", Z, outf, err)
+			}
+			defer fdx.Close()
 
-    pk, err := sign.ReadPrivateKey(kn, pw)
-    if err != nil { die("%s: %s", Z, err) }
+			fd = fdx
+		}
+	}
 
-    sig, err := pk.SignFile(fn)
-    if err != nil { die("%s: %s", Z, err) }
+	kn := opt.Args[0]
+	fn := opt.Args[1]
 
-    sigo, err := sig.Serialize(fmt.Sprintf("inpfile=%s", fn))
+	pk, err := sign.ReadPrivateKey(kn, pw)
+	if err != nil {
+		die("%s: %s", Z, err)
+	}
 
-    fd.Write(sigo)
+	sig, err := pk.SignFile(fn)
+	if err != nil {
+		die("%s: %s", Z, err)
+	}
+
+	sigo, err := sig.Serialize(fmt.Sprintf("inpfile=%s", fn))
+
+	fd.Write(sigo)
 }
 
 // Verify signature on a given file
 func verify(s *options.Spec, opt *options.Options) {
-    if opt.GetBool("help") {
-        s.PrintUsageAndExit()
-    }
+	if opt.GetBool("help") {
+		s.PrintUsageAndExit()
+	}
 
-    if len(opt.Args) < 3 {
-        s.PrintUsageWithError(fmt.Errorf("Missing arguments (key? file? pubkey?)"))
-    }
-    
-    pn := opt.Args[0]
-    sn := opt.Args[1]
-    fn := opt.Args[2]
+	if len(opt.Args) < 3 {
+		s.PrintUsageWithError(fmt.Errorf("Missing arguments (key? file? pubkey?)"))
+	}
 
-    sig, err := sign.ReadSignature(sn)
-    if err != nil { die("%s: Can't read signature '%s': %s", Z, sn, err) }
+	pn := opt.Args[0]
+	sn := opt.Args[1]
+	fn := opt.Args[2]
 
-    pk, err := sign.ReadPublicKey(pn)
-    if err != nil { die("%s: %s", Z, err) }
+	sig, err := sign.ReadSignature(sn)
+	if err != nil {
+		die("%s: Can't read signature '%s': %s", Z, sn, err)
+	}
 
-    if !sig.IsPKMatch(pk) { die("Wrong public key '%s' for verifying '%s'", pn, sn) }
+	pk, err := sign.ReadPublicKey(pn)
+	if err != nil {
+		die("%s: %s", Z, err)
+	}
 
-    ok, err := pk.VerifyFile(fn, sig)
-    if err != nil { die("%s: %s", Z, err) }
+	if !sig.IsPKMatch(pk) {
+		die("Wrong public key '%s' for verifying '%s'", pn, sn)
+	}
 
-    exit := 0
-    if !ok { exit = 1 }
+	ok, err := pk.VerifyFile(fn, sig)
+	if err != nil {
+		die("%s: %s", Z, err)
+	}
 
-    if !opt.GetBool("quiet") {
-        if ok {
-            fmt.Printf("%s: Signature %s verified\n", fn, sn)
-        } else {
-            fmt.Printf("%s: Signature %s verification FAILURE\n", fn, sn)
-        }
-    }
+	exit := 0
+	if !ok {
+		exit = 1
+	}
 
-    os.Exit(exit)
+	if !opt.GetBool("quiet") {
+		if ok {
+			fmt.Printf("%s: Signature %s verified\n", fn, sn)
+		} else {
+			fmt.Printf("%s: Signature %s verification failure\n", fn, sn)
+		}
+	}
+
+	os.Exit(exit)
 }
-
 
 func main() {
 
-    var  env = []string{}
+	var env = []string{}
 
-    spec  := options.MustParse(Maindesc)
-    gspec := options.MustParse(Gendesc)
-    sspec := options.MustParse(Signdesc)
-    vspec := options.MustParse(Verifydesc)
+	spec := options.MustParse(Maindesc)
+	gspec := options.MustParse(Gendesc)
+	sspec := options.MustParse(Signdesc)
+	vspec := options.MustParse(Verifydesc)
 
-    opts, err := spec.Interpret(os.Args, env)
-    if err != nil { die("%s", err) }
+	opts, err := spec.Interpret(os.Args, env)
+	if err != nil {
+		die("%s", err)
+	}
 
-    if opts.GetBool("help") { spec.PrintUsageAndExit() }
-    if opts.GetBool("ver")  {
-        fmt.Printf("%s: %s\n", Z, Version)
-        os.Exit(0)
-    }
+	if opts.GetBool("help") {
+		spec.PrintUsageAndExit()
+	}
+	if opts.GetBool("ver") {
+		fmt.Printf("%s: %s\n", Z, Version)
+		os.Exit(0)
+	}
 
-    switch opts.Command {
-        case "gen":
-            o, err := gspec.Interpret(opts.Args, env)
-            if err != nil { die("%s", err) }
-            gen(gspec, o)
+	switch opts.Command {
+	case "gen":
+		o, err := gspec.Interpret(opts.Args, env)
+		if err != nil {
+			die("%s", err)
+		}
+		gen(gspec, o)
 
-        case "sign":
-            ox, err := sspec.Interpret(opts.Args, env)
-            if err != nil { die("%s", err) }
-            signify(sspec, ox)
+	case "sign":
+		ox, err := sspec.Interpret(opts.Args, env)
+		if err != nil {
+			die("%s", err)
+		}
+		signify(sspec, ox)
 
-        case "verify":
-            ox, err := vspec.Interpret(opts.Args, env)
-            if err != nil { die("%s", err) }
-            verify(vspec, ox)
+	case "verify":
+		ox, err := vspec.Interpret(opts.Args, env)
+		if err != nil {
+			die("%s", err)
+		}
+		verify(vspec, ox)
 
-        default:
-            die("%s: Forgot to add code for command %s", Z, opts.Command)
-    }
+	default:
+		die("%s: Forgot to add code for command %s", Z, opts.Command)
+	}
 
 }
 
-// vim: ft=go:sw=4:ts=4:expandtab:tw=78:
+// vim: ft=go:sw=8:ts=8:noexpandtab:tw=98:
