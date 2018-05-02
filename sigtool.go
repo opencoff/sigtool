@@ -20,133 +20,282 @@ import (
 	"os"
 	"path"
 
-	"github.com/opencoff/go-options"
+	flag "github.com/ogier/pflag"
 	"github.com/opencoff/go-sign"
 	"github.com/opencoff/go-utils"
 )
 
 // This will be filled in by "build"
-var Version string = "1.0"
+var Version string = "1.1"
 
 var Z string = path.Base(os.Args[0])
 
-// die with error
-func die(f string, v ...interface{}) {
-	z := fmt.Sprintf("%s: %s", Z, f)
-	s := fmt.Sprintf(z, v...)
-	if n := len(s); s[n-1] != '\n' {
-		s += "\n"
+func main() {
+
+	var ver, help bool
+
+	mf := flag.NewFlagSet(Z, flag.ExitOnError)
+	mf.SetInterspersed(false)
+	mf.BoolVarP(&ver, "version", "v", false, "Show version info and exit")
+	mf.BoolVarP(&help, "help", "h", false, "Show help info exit")
+	mf.Parse(os.Args[1:])
+
+	if ver {
+		fmt.Printf("%s: %s\n", Z, Version)
+		os.Exit(0)
 	}
 
-	os.Stderr.WriteString(s)
-	os.Exit(1)
+	if help {
+		usage(0)
+	}
+
+	args := mf.Args()
+	if len(args) < 1 {
+		warn("Insufficient arguments. Try '%s -h'", Z)
+		os.Exit(1)
+	}
+
+	switch args[0] {
+	case "gen", "generate", "g":
+		gen(args[1:])
+
+	case "sign", "s":
+		signify(args[1:])
+
+	case "verify", "v":
+		verify(args[1:])
+
+	case "help", "":
+		usage(0)
+
+	default:
+		die("Unknown command %s", args[0])
+	}
 }
 
-// Option parsing spec for the main program
-var Maindesc = fmt.Sprintf(`
-Usage: %s [options] command [options ..] [args ..]
-
-%s is a tool to generate, sign and verify files with Ed25519 signatures.
---
-#      Options
-help   -h,--help        Show this help message and exit
-ver    -v,--version     Show version info and exit
---
---
-#      Commands
-gen    generate,gen      Generate a new Ed25519 keypair
-sign   sign, s           Sign a file with a private key
-verify verify, v         Verify a signature against a file and public key
---`, Z, Z)
-
-// Option parsing spec for key gen
-var Gendesc = fmt.Sprintf(`
-Usage: %s generate [options] path-prefix
-
-Generate a new Ed25519 public/private key pair. The public key is written
-to PATH-PREFIX.pub and private key to PATH-PREFIX.key.
---
-#        Options
-help     -h,--help         Show this help message and exit
-pw       -p,--passwd       Ask for a passphrase to encrypt the private key
-comment= -c=,--comment=    Use 'C' as the text comment for the keys []
-envpw=   -e=E,--env-pass=E Use passphrase from environment var E []
-force    -F,--force        Overwrite the output file if it exists [false]
---
---
-*
---`, Z)
-
-// Option parsing spec for signing a file
-var Signdesc = fmt.Sprintf(`
-Usage: %s sign [options] privkey file
-
-Sign FILE with an Ed25519 PRIVKEY and write the signature to STDOUT.
---
-#        Options
-help     -h,--help         Show this help message and exit
-pw       -p,--passwd       Ask for a passphrase to decrypt the private key
-envpw=   -e=E,--env-pass=E Use passphrase from environment var E []
-output=- -o=F,--output=F   Write signature to file F [STDOUT]
---
---
-*
---`, Z)
-
-// Option parsing spec for signature verification
-var Verifydesc = fmt.Sprintf(`
-Usage: %s verify [options] pubkey sig file
-
-Verify signature SIG of FILE using Ed25519 public key in PUBKEY.
---
-#        Options
-help     -h,--help        Show this help message and exit
-quiet    -q,--quiet       Don't show any output, exit with status code
---
---
-*
---`, Z)
-
 // Run the generate command
-func gen(s *options.Spec, opt *options.Options) {
-	if opt.GetBool("help") {
-		s.PrintUsageAndExit()
+func gen(args []string) {
+
+	var pw, help, force bool
+	var comment string
+	var envpw string
+
+	fs := flag.NewFlagSet("generate", flag.ExitOnError)
+	fs.BoolVarP(&help, "help", "h", false, "Show this help and exit")
+	fs.BoolVarP(&pw, "password", "p", false, "Ask for passphrase to encrypt the private key [False]")
+	fs.StringVarP(&comment, "comment", "c", "", "Use 'C' as the text comment for the keys []")
+	fs.StringVarP(&envpw, "env-password", "E", "", "Use passphrase from environment variable 'E' []")
+	fs.BoolVarP(&force, "force", "F", false, "Overwrite the output file if it exists [False]")
+
+	fs.Parse(args)
+
+	if help {
+		fs.SetOutput(os.Stdout)
+		fmt.Printf(`%s generate|gen|g [options] file-prefix
+
+Generate a new Ed25519 public+private key pair and write public key to
+FILE-PREFIX.pub and private key to FILE-PREFIX.key.
+
+Options:
+`, Z)
+		fs.PrintDefaults()
+		os.Exit(0)
 	}
 
-	if len(opt.Args) < 1 {
-		s.PrintUsageWithError(fmt.Errorf("Missing path-prefix."))
+	args = fs.Args()
+	if len(args) < 1 {
+		die("Insufficient arguments to 'generate'. Try '%s generate -h' ..", Z)
 	}
 
-	bn := opt.Args[0]
+	bn := args[0]
 
-	if exists(bn) && !opt.GetBool("force") {
-		die("%s: Public/Private key files (%s.key, %s.pub) exist. Won't overwrite!", Z, bn, bn)
+	if exists(bn) && !force {
+		die("Public/Private key files (%s.key, %s.pub) exist. Won't overwrite!", bn, bn)
 	}
 
-	var pw string
-	var comm string
+	var pws string
 	var err error
 
-	if pwenv, ok := opt.Get("envpw"); ok {
-		pw = os.Getenv(pwenv)
-	} else if opt.GetBool("pw") {
-		pw, err = utils.Askpass("Enter passphrase for private key", true)
+	if len(envpw) > 0 {
+		pws = os.Getenv(envpw)
+	} else if pw {
+		pws, err = utils.Askpass("Enter passphrase for private key", true)
 		if err != nil {
-			die("%s: %s", Z, err)
+			die("%s", err)
 		}
 	}
 
-	comm, _ = opt.Get("comment")
-
 	kp, err := sign.NewKeypair()
 	if err != nil {
-		die("%s: %s", Z, err)
+		die("%s", err)
 	}
 
-	err = kp.Serialize(bn, comm, pw)
+	err = kp.Serialize(bn, comment, pws)
 	if err != nil {
-		die("%s: %s", Z, err)
+		die("%s", err)
 	}
+}
+
+// Run the 'sign' command.
+func signify(args []string) {
+	var pw, help bool
+	var output string
+	var envpw string
+
+	fs := flag.NewFlagSet("sign", flag.ExitOnError)
+	fs.BoolVarP(&help, "help", "h", false, "Show this help and exit")
+	fs.BoolVarP(&pw, "password", "p", false, "Ask for passphrase to decrypt the private key [False]")
+	fs.StringVarP(&envpw, "env-password", "E", "", "Use passphrase from environment variable 'E' []")
+	fs.StringVarP(&output, "output", "o", "", "Write signature to file F")
+
+	fs.Parse(args)
+
+	if help {
+		fs.SetOutput(os.Stdout)
+		fmt.Printf(`%s sign|s [options] privkey file
+
+Sign FILE with a Ed25519 private key PRIVKEY and write signature to FILE.sig
+
+Options:
+`, Z)
+		fs.PrintDefaults()
+		os.Exit(0)
+	}
+
+	args = fs.Args()
+	if len(args) < 2 {
+		die("Insufficient arguments to 'sign'. Try '%s sign -h' ..", Z)
+	}
+
+	kn := args[0]
+	fn := args[1]
+	outf := fmt.Sprintf("%s.sig", fn)
+
+	var pws string
+	var err error
+
+	if len(envpw) > 0 {
+		pws = os.Getenv(envpw)
+	} else if pw {
+		pws, err = utils.Askpass("Enter passphrase for private key", false)
+		if err != nil {
+			die("%s", err)
+		}
+	}
+
+	if len(output) > 0 {
+		outf = output
+	}
+
+	pk, err := sign.ReadPrivateKey(kn, pws)
+	if err != nil {
+		die("%s", err)
+	}
+
+	sig, err := pk.SignFile(fn)
+	if err != nil {
+		die("%s", err)
+	}
+
+	sigo, err := sig.Serialize(fmt.Sprintf("input=%s", fn))
+
+	var fd io.Writer = os.Stdout
+
+	if outf != "-" {
+		fdx, err := os.OpenFile(outf, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
+		if err != nil {
+			die("can't create output file %s: %s", outf, err)
+		}
+		defer fdx.Close()
+		fd = fdx
+	}
+
+	fd.Write(sigo)
+}
+
+// Verify signature on a given file
+func verify(args []string) {
+	var help, quiet bool
+
+	fs := flag.NewFlagSet("verify", flag.ExitOnError)
+	fs.BoolVarP(&help, "help", "h", false, "Show this help and exit")
+	fs.BoolVarP(&quiet, "quiet", "q", false, "Don't show any output; exit with status code only [False]")
+
+	fs.Parse(args)
+
+	if help {
+		fs.SetOutput(os.Stdout)
+		fmt.Printf(`%s verify|v [options] pubkey sig file
+
+Verify an Ed25519 signature in SIG of FILE using a public key PUBKEY.
+
+Options:
+`, Z)
+		fs.PrintDefaults()
+		os.Exit(0)
+	}
+
+	args = fs.Args()
+	if len(args) < 3 {
+		die("Insufficient arguments to 'verify'. Try '%s verify -h' ..", Z)
+	}
+
+	pn := args[0]
+	sn := args[1]
+	fn := args[2]
+
+	sig, err := sign.ReadSignature(sn)
+	if err != nil {
+		die("Can't read signature '%s': %s", sn, err)
+	}
+
+	pk, err := sign.ReadPublicKey(pn)
+	if err != nil {
+		die("%s", err)
+	}
+
+	if !sig.IsPKMatch(pk) {
+		die("Wrong public key '%s' for verifying '%s'", pn, sn)
+	}
+
+	ok, err := pk.VerifyFile(fn, sig)
+	if err != nil {
+		die("%s", err)
+	}
+
+	exit := 0
+	if !ok {
+		exit = 1
+	}
+
+	if !quiet {
+		if ok {
+			fmt.Printf("%s: Signature %s verified\n", fn, sn)
+		} else {
+			fmt.Printf("%s: Signature %s verification failure\n", fn, sn)
+		}
+	}
+
+	os.Exit(exit)
+}
+
+func usage(c int) {
+	x := fmt.Sprintf(`%s is a tool to generate, sign and verify files with Ed25519 signatures.
+
+Usage: %s [global-options] command [options] arg [args..]
+
+Global options:
+  -h, --help       Show help and exit
+  -v, --version    Show version info and exit.
+
+Commands:
+  generate, g      Generate a new Ed25519 keypair
+  sign, s          Sign a file with a private key
+  verify, v        Verify a signature against a file and a public key
+`, Z, Z)
+
+	os.Stdout.Write([]byte(x))
+	os.Exit(c)
 }
 
 // Return true if $bn.key or $bn.pub exist; false otherwise
@@ -164,156 +313,21 @@ func exists(bn string) bool {
 	return false
 }
 
-// Run the 'sign' command.
-func signify(s *options.Spec, opt *options.Options) {
-	if opt.GetBool("help") {
-		s.PrintUsageAndExit()
-	}
-
-	if len(opt.Args) < 2 {
-		s.PrintUsageWithError(fmt.Errorf("Missing arguments (key? file?)"))
-	}
-
-	var pw string
-	var err error
-	var fd io.Writer = os.Stdout
-
-	if pwenv, ok := opt.Get("envpw"); ok {
-		pw = os.Getenv(pwenv)
-	} else if opt.GetBool("pw") {
-		pw, err = utils.Askpass("Enter passphrase for private key", false)
-		if err != nil {
-			die("%s: %s", Z, err)
-		}
-	}
-
-	if outf, ok := opt.Get("output"); ok {
-		if outf != "-" {
-			fdx, err := os.OpenFile(outf, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
-			if err != nil {
-				die("%s: Can't create output file %s: %s", Z, outf, err)
-			}
-			defer fdx.Close()
-
-			fd = fdx
-		}
-	}
-
-	kn := opt.Args[0]
-	fn := opt.Args[1]
-
-	pk, err := sign.ReadPrivateKey(kn, pw)
-	if err != nil {
-		die("%s: %s", Z, err)
-	}
-
-	sig, err := pk.SignFile(fn)
-	if err != nil {
-		die("%s: %s", Z, err)
-	}
-
-	sigo, err := sig.Serialize(fmt.Sprintf("inpfile=%s", fn))
-
-	fd.Write(sigo)
+// die with error
+func die(f string, v ...interface{}) {
+	warn(f, v...)
+	os.Exit(1)
 }
 
-// Verify signature on a given file
-func verify(s *options.Spec, opt *options.Options) {
-	if opt.GetBool("help") {
-		s.PrintUsageAndExit()
+func warn(f string, v ...interface{}) {
+	z := fmt.Sprintf("%s: %s", os.Args[0], f)
+	s := fmt.Sprintf(z, v...)
+	if n := len(s); s[n-1] != '\n' {
+		s += "\n"
 	}
 
-	if len(opt.Args) < 3 {
-		s.PrintUsageWithError(fmt.Errorf("Missing arguments (key? file? pubkey?)"))
-	}
-
-	pn := opt.Args[0]
-	sn := opt.Args[1]
-	fn := opt.Args[2]
-
-	sig, err := sign.ReadSignature(sn)
-	if err != nil {
-		die("%s: Can't read signature '%s': %s", Z, sn, err)
-	}
-
-	pk, err := sign.ReadPublicKey(pn)
-	if err != nil {
-		die("%s: %s", Z, err)
-	}
-
-	if !sig.IsPKMatch(pk) {
-		die("Wrong public key '%s' for verifying '%s'", pn, sn)
-	}
-
-	ok, err := pk.VerifyFile(fn, sig)
-	if err != nil {
-		die("%s: %s", Z, err)
-	}
-
-	exit := 0
-	if !ok {
-		exit = 1
-	}
-
-	if !opt.GetBool("quiet") {
-		if ok {
-			fmt.Printf("%s: Signature %s verified\n", fn, sn)
-		} else {
-			fmt.Printf("%s: Signature %s verification failure\n", fn, sn)
-		}
-	}
-
-	os.Exit(exit)
-}
-
-func main() {
-
-	var env = []string{}
-
-	spec := options.MustParse(Maindesc)
-	gspec := options.MustParse(Gendesc)
-	sspec := options.MustParse(Signdesc)
-	vspec := options.MustParse(Verifydesc)
-
-	opts, err := spec.Interpret(os.Args, env)
-	if err != nil {
-		die("%s", err)
-	}
-
-	if opts.GetBool("help") {
-		spec.PrintUsageAndExit()
-	}
-	if opts.GetBool("ver") {
-		fmt.Printf("%s: %s\n", Z, Version)
-		os.Exit(0)
-	}
-
-	switch opts.Command {
-	case "gen":
-		o, err := gspec.Interpret(opts.Args, env)
-		if err != nil {
-			die("%s", err)
-		}
-		gen(gspec, o)
-
-	case "sign":
-		ox, err := sspec.Interpret(opts.Args, env)
-		if err != nil {
-			die("%s", err)
-		}
-		signify(sspec, ox)
-
-	case "verify":
-		ox, err := vspec.Interpret(opts.Args, env)
-		if err != nil {
-			die("%s", err)
-		}
-		verify(vspec, ox)
-
-	default:
-		die("%s: Forgot to add code for command %s", Z, opts.Command)
-	}
-
+	os.Stderr.WriteString(s)
+	os.Stderr.Sync()
 }
 
 // vim: ft=go:sw=8:ts=8:noexpandtab:tw=98:
