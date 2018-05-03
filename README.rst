@@ -120,7 +120,7 @@ useful in multiple projects. You can find them on github_.
 The core code is in the ``sign`` library. This library is
 can be reused in any of your projects.
 
-.. _github: https://github.com/opencoff/go-lib/
+.. _github: https://github.com/opencoff/go-sign/
 
 Licensing Terms
 ===============
