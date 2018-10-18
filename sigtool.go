@@ -21,8 +21,10 @@ import (
 	"path"
 
 	flag "github.com/ogier/pflag"
-	"github.com/opencoff/go-sign"
 	"github.com/opencoff/go-utils"
+
+	// My signing library
+	"sign"
 )
 
 // This will be filled in by "build"

@@ -27,7 +27,6 @@ vendor/*
 # vendor management
 vendor/src/*
 vendor/pkg/*
-src/*
 bin/*
 
 .??*.sw?
