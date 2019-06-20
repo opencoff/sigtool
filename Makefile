@@ -1,17 +1,14 @@
 
 pwd = $(shell pwd)
-GOPATH := $(pwd)/vendor:$(pwd)
-export GOPATH
+
+.PHONY: all test clean realclean
 
 all:
 	mkdir -p bin
-	go get -d .
 	go build -o bin/sigtool .
 
 test:
-	go test sign
-clean:
-	rm -f bin/sigtool
+	go test ./sign
 
-realclean: clean
-	rm -rf vendor
+clean realclean:
+	rm -f bin/sigtool

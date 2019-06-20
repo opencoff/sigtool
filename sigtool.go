@@ -20,11 +20,9 @@ import (
 	"os"
 	"path"
 
-	flag "github.com/ogier/pflag"
 	"github.com/opencoff/go-utils"
-
-	// My signing library
-	"sign"
+	flag "github.com/opencoff/pflag"
+	"github.com/opencoff/sigtool/sign"
 )
 
 // This will be filled in by "build"
@@ -84,10 +82,10 @@ func gen(args []string) {
 
 	fs := flag.NewFlagSet("generate", flag.ExitOnError)
 	fs.BoolVarP(&help, "help", "h", false, "Show this help and exit")
-	fs.BoolVarP(&pw, "password", "p", false, "Ask for passphrase to encrypt the private key [False]")
-	fs.StringVarP(&comment, "comment", "c", "", "Use 'C' as the text comment for the keys []")
-	fs.StringVarP(&envpw, "env-password", "E", "", "Use passphrase from environment variable 'E' []")
-	fs.BoolVarP(&force, "force", "F", false, "Overwrite the output file if it exists [False]")
+	fs.BoolVarP(&pw, "password", "p", false, "Ask for passphrase to encrypt the private key")
+	fs.StringVarP(&comment, "comment", "c", "", "Use `C` as the text comment for the keys")
+	fs.StringVarP(&envpw, "env-password", "E", "", "Use passphrase from environment variable `E`")
+	fs.BoolVarP(&force, "force", "F", false, "Overwrite the output file if it exists")
 
 	fs.Parse(args)
 
@@ -146,9 +144,9 @@ func signify(args []string) {
 
 	fs := flag.NewFlagSet("sign", flag.ExitOnError)
 	fs.BoolVarP(&help, "help", "h", false, "Show this help and exit")
-	fs.BoolVarP(&pw, "password", "p", false, "Ask for passphrase to decrypt the private key [False]")
-	fs.StringVarP(&envpw, "env-password", "E", "", "Use passphrase from environment variable 'E' []")
-	fs.StringVarP(&output, "output", "o", "", "Write signature to file F")
+	fs.BoolVarP(&pw, "password", "p", false, "Ask for passphrase to decrypt the private key")
+	fs.StringVarP(&envpw, "env-password", "E", "", "Use passphrase from environment variable `E`")
+	fs.StringVarP(&output, "output", "o", "", "Write signature to file `F`")
 
 	fs.Parse(args)
 
@@ -221,7 +219,7 @@ func verify(args []string) {
 
 	fs := flag.NewFlagSet("verify", flag.ExitOnError)
 	fs.BoolVarP(&help, "help", "h", false, "Show this help and exit")
-	fs.BoolVarP(&quiet, "quiet", "q", false, "Don't show any output; exit with status code only [False]")
+	fs.BoolVarP(&quiet, "quiet", "q", false, "Don't show any output; exit with status code only")
 
 	fs.Parse(args)
 
