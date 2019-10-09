@@ -19,6 +19,7 @@ import (
 	"io"
 	"os"
 	"path"
+	"strings"
 
 	"github.com/opencoff/go-utils"
 	flag "github.com/opencoff/pflag"
@@ -55,22 +56,35 @@ func main() {
 		os.Exit(1)
 	}
 
-	switch args[0] {
-	case "gen", "generate", "g":
-		gen(args[1:])
+	cmds := map[string]func(args []string){
+		"generate": gen,
+		"sign":     signify,
+		"verify":   verify,
+		"encrypt":  encrypt,
+		"decrypt":  decrypt,
 
-	case "sign", "s":
-		signify(args[1:])
+		"help": func(_ []string) {
+			usage(0)
+		},
+	}
 
-	case "verify", "v":
-		verify(args[1:])
+	words := make([]string, 0, len(cmds))
+	for k := range cmds {
+		words = append(words, k)
+	}
 
-	case "help", "":
-		usage(0)
-
-	default:
+	ab := utils.Abbrev(words)
+	canon, ok := ab[strings.ToLower(args[0])]
+	if !ok {
 		die("Unknown command %s", args[0])
 	}
+
+	cmd := cmds[canon]
+	if cmd == nil {
+		die("can't map command %s", canon)
+	}
+
+	cmd(args[1:])
 }
 
 // Run the generate command

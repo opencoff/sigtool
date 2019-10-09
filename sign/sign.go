@@ -29,10 +29,11 @@ import (
 	"encoding/binary"
 	"fmt"
 	"hash"
+	"io"
 	"io/ioutil"
 	"os"
 
-	Ed "golang.org/x/crypto/ed25519"
+	Ed "crypto/ed25519"
 	"golang.org/x/crypto/scrypt"
 	"gopkg.in/yaml.v2"
 
@@ -43,14 +44,21 @@ import (
 type PrivateKey struct {
 	Sk []byte
 
+	// Encryption key: Curve25519 point corresponding to this Ed25519 key
+	ck []byte
+
 	// Cached copy of the public key
-	// In reality, it is a pointer to Sk[32:]
-	pk []byte
+	pk *PublicKey
 }
 
 // Public Ed25519 key
 type PublicKey struct {
 	Pk []byte
+
+	// Curve25519 point corresponding to this Ed25519 key
+	ck []byte
+
+	hash []byte
 }
 
 // Ed25519 key pair
@@ -61,7 +69,7 @@ type Keypair struct {
 
 // An Ed25519 Signature
 type Signature struct {
-	Sig    []byte // 32 byte digital signature
+	Sig    []byte // Ed25519 sig bytes
 	pkhash []byte // [0:16] SHA256 hash of public key needed for verification
 }
 
@@ -112,6 +120,7 @@ type serializedPrivKey struct {
 type serializedPubKey struct {
 	Comment string `yaml:"comment,omitempty"`
 	Pk      string `yaml:"pk"`
+	Hash    string `yaml:"hash"`
 }
 
 // Serialized signature
@@ -121,12 +130,18 @@ type signature struct {
 	Signature string `yaml:"signature"`
 }
 
+func pkhash(pk []byte) []byte {
+	z := sha256.Sum256(pk)
+	return z[:16]
+}
+
 // Generate a new Ed25519 keypair
 func NewKeypair() (*Keypair, error) {
 	//kp := &Keypair{Sec: PrivateKey{N: 1 << 17, r: 64, p: 1}}
 	kp := &Keypair{}
 	sk := &kp.Sec
 	pk := &kp.Pub
+	sk.pk = pk
 
 	p, s, err := Ed.GenerateKey(rand.Reader)
 	if err != nil {
@@ -135,6 +150,7 @@ func NewKeypair() (*Keypair, error) {
 
 	pk.Pk = []byte(p)
 	sk.Sk = []byte(s)
+	pk.hash = pkhash(pk.Pk)
 
 	return kp, nil
 }
@@ -232,6 +248,16 @@ func MakePrivateKey(yml []byte, pw string) (*PrivateKey, error) {
 	return sk, nil
 }
 
+// Given a secret key, return the corresponding Public Key
+func (sk *PrivateKey) PublicKey() *PublicKey {
+	return sk.pk
+}
+
+// Public Key Hash
+func (pk *PublicKey) Hash() []byte {
+	return pk.hash
+}
+
 // Serialize the private key to a file
 // Format: YAML
 // All []byte are in base64 (RawEncoding)
@@ -253,11 +279,7 @@ func (sk *PrivateKey) serialize(fn, comment string, pw string) error {
 	esk.Salt = make([]byte, 32)
 	esk.Esk = make([]byte, len(sk.Sk))
 
-	_, err := rand.Read(esk.Salt)
-	if err != nil {
-		return fmt.Errorf("Can't read random salt: %s", err)
-	}
-
+	randread(esk.Salt)
 	xork, err := scrypt.Key(pwb[:], esk.Salt, int(esk.N), int(esk.r), int(esk.p), len(sk.Sk))
 	if err != nil {
 		return fmt.Errorf("Can't derive scrypt key: %s", err)
@@ -307,13 +329,10 @@ func (sk *PrivateKey) SignMessage(ck []byte, comment string) (*Signature, error)
 		return nil, fmt.Errorf("can't sign %x: %s", ck, err)
 	}
 
-	esk := Ed.PrivateKey(sk.Sk) // type cast
-	epk := esk.Public()         // interface
-	xpk := epk.(Ed.PublicKey)   // type assertion
-	pk := []byte(xpk)           // cast
-	pkh := sha256.Sum256(pk)
-
-	return &Signature{Sig: sig, pkhash: pkh[:16]}, nil
+	return &Signature{
+		Sig:    sig,
+		pkhash: sk.pk.hash,
+	}, nil
 }
 
 // Read and sign a file
@@ -396,8 +415,7 @@ func (sig *Signature) SerializeFile(fn, comment string) error {
 // the signature. It does this by comparing the hash of 'pk' against
 // 'Pkhash' of 'sig'.
 func (sig *Signature) IsPKMatch(pk *PublicKey) bool {
-	h := sha256.Sum256(pk.Pk)
-	return subtle.ConstantTimeCompare(h[:16], sig.pkhash) == 1
+	return subtle.ConstantTimeCompare(pk.hash, sig.pkhash) == 1
 }
 
 //  --- Public Key Methods ---
@@ -437,19 +455,27 @@ func MakePublicKey(yml []byte) (*PublicKey, error) {
 		return nil, fmt.Errorf("public key data is empty?")
 	}
 
+	if len(pk.Pk) != 32 {
+		return nil, fmt.Errorf("public key is malformed (len %d!)", len(pk.Pk))
+	}
+
+	pk.hash = pkhash(pk.Pk)
+
 	return pk, nil
 }
 
 // Serialize Public Keys
 func (pk *PublicKey) serialize(fn, comment string) error {
 	b64 := base64.StdEncoding.EncodeToString
-	spk := &serializedPubKey{Comment: comment}
-
-	spk.Pk = b64(pk.Pk)
+	spk := &serializedPubKey{
+		Comment: comment,
+		Pk:      b64(pk.Pk),
+		Hash:    b64(pk.hash),
+	}
 
 	out, err := yaml.Marshal(spk)
 	if err != nil {
-		return fmt.Errorf("Can't marahal to YAML: %s", err)
+		return fmt.Errorf("can't marahal to YAML: %s", err)
 	}
 
 	return writeFile(fn, out, 0644)
@@ -535,6 +561,14 @@ func fileCksum(fn string, h hash.Hash) ([]byte, error) {
 	h.Write(b[:])
 
 	return h.Sum(nil), nil
+}
+
+func randread(b []byte) []byte {
+	_, err := io.ReadFull(rand.Reader, b)
+	if err != nil {
+		panic(fmt.Sprintf("can't read %d bytes of random data: %s", len(b), err))
+	}
+	return b
 }
 
 // EOF

@@ -252,13 +252,11 @@ func Test1(t *testing.T) {
 	os.RemoveAll(dn)
 }
 
-
 func Benchmark_Keygen(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		_, _ = NewKeypair()
 	}
 }
-
 
 func Benchmark_Sig(b *testing.B) {
 	var sizes = [...]uint{
@@ -277,11 +275,11 @@ func Benchmark_Sig(b *testing.B) {
 
 		b.ResetTimer()
 
-		b.Run(s0, func (b *testing.B) {
+		b.Run(s0, func(b *testing.B) {
 			sig = benchSign(b, buf, &kp.Sec)
 		})
 
-		b.Run(s1, func (b *testing.B) {
+		b.Run(s1, func(b *testing.B) {
 			benchVerify(b, buf, sig, &kp.Pub)
 		})
 	}
@@ -299,7 +297,6 @@ func benchVerify(b *testing.B, buf []byte, sig *Signature, pk *PublicKey) {
 		pk.VerifyMessage(buf, sig)
 	}
 }
-
 
 func randbuf(sz uint) []byte {
 	b := make([]byte, sz)
