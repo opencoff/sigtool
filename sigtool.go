@@ -201,12 +201,12 @@ Options:
 		outf = output
 	}
 
-	pk, err := sign.ReadPrivateKey(kn, pws)
+	sk, err := sign.ReadPrivateKey(kn, pws)
 	if err != nil {
 		die("%s", err)
 	}
 
-	sig, err := pk.SignFile(fn)
+	sig, err := sk.SignFile(fn)
 	if err != nil {
 		die("%s", err)
 	}
