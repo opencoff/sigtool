@@ -4,15 +4,54 @@
 
 
 ## What is this?
-`sigtool` is an opinionated tool to generate, sign and verify Ed25519
-signatures on files.  In many ways, it is like like OpenBSD's signify_
--- except written in Golang and definitely easier to use.
+`sigtool` is an opinionated tool to generate keys, sign, verify, encrypt &
+decrypt files using Ed25519 signature scheme.  In many ways, it is like
+like OpenBSD's [signify][1] -- except written in Golang and definitely
+easier to use.
 
 It can sign and verify very large files - it prehashes the files
-with SHA-512 and then signs the SHA-512 checksum.
+with SHA-512 and then signs the SHA-512 checksum. The keys and signatures
+are YAML files and so, human readable.
 
-All the artifacts produced by this tool are standard YAML files -
-thus, human readable.
+It can encrypt & decrypt files by converting the Ed25519 keys to their
+corresponding Curve25519 variants. This elliptic co-ordinate transform
+follows [FiloSottile's writeup][2]. The file encryption uses
+AES-GCM-256 (AEAD); the input is broken into chunks and each chunk is
+AEAD encrypted. The default chunk size is 4MB (4 * 1048576 bytes). 
+
+A random 32-byte key is used to actually encrypt the file contents in
+AES-GCM mode. This file-encryption key is **wrapped** using the recipient's
+public key. Thus, a given input file (or stream) can be encrypted to be
+read by multiple recipients - each of whom is identified by their Ed25519
+public keys. The file-encryptionb-key can optionally be wrapped using the
+sender's Private Key - this authenticates the sender. If this private key is
+not provided for the encrypt operation, then `sigtool` generates ephemeral
+Curve25519 keys and wraps the file-encryption key using the ephemeral 
+private key and the recipient's public key.
+
+Every encrypted file starts with a header:
+
+    7 byte magic ("SigTool")
+    1 byte version number
+    4 byte header length
+    32 byte SHA256 of the encryption-header
+
+The encryption-header is described as a protobuf file (sign/hdr.proto):
+
+```protobuf
+    message header {
+        uint32 chunk_size = 1;
+        bytes  salt = 2;
+        repeated wrapped_key keys = 3;
+    }
+
+    message wrapped_key {
+        bytes pk_hash = 1; // hash of Ed25519 PK
+        bytes pk = 2;       // curve25519 PK
+        bytes nonce = 3;    // AEAD nonce
+        bytes key = 4;      // AEAD encrypted key
+    }
+```
 
 ## How do I build it?
 With Go 1.5 and later:
@@ -21,7 +60,9 @@ With Go 1.5 and later:
     cd sigtool
     make
 
-The binary will be in `./sigtool`.
+The binary will be in `./bin/$HOSTOS-$ARCH/sigtool`.
+where `$HOSTOS` is the host OS where you are building (e.g., openbsd)
+and `$ARCH` is the CPU architecture (e.g., amd64).
 
 ## How do I use it?
 Broadly, the tool can:
@@ -29,6 +70,8 @@ Broadly, the tool can:
 - generate new key pairs (public key and private key)
 - sign a file
 - verify a file against its signature
+- encrypt a file
+- decrypt a file
 
 ### Generate Key pair
 To start with, you generate a new key pair (a public key used for
@@ -73,6 +116,22 @@ e.g., to verify the signature of *archive.tar.gz* against
 
     sigtool verify /tmp/testkey.pub archive.sig archive.tar.gz
 
+### Encrypt a file by authenticating the sender
+If the sender wishes to prove to the recipient that they  encrypted
+a file:
+
+   sigtool encrypt -s mykey.key theirkey.pub -o archive.tar.gz.enc archive.tar.gz
+
+
+This will create an encrypted file *archive.tar.gz.enc* such that the
+recipient in possession of *theikey.key* can decrypt it. Furthermore, if
+the recipient has *mykey.pub*, they can verify that the sender is indeed
+who they expect.
+
+### Encrypt a file *without* authenticating the sender
+
+### Decrypt a file
+
 ## How is the private key protected?
 The Ed25519 private key is encrypted using a key derived from the
 user supplied pass phrase. This pass phrase is used to derive an
@@ -111,6 +170,8 @@ A serialized Ed25519 public key looks like so:
 ### Ed25519 Private Key
 And, a serialized Ed25519 private key looks like so:
 
+```yaml
+
     esk: t3vfqHbgUiA733KKPymFjWT8DdnBEkiMfsDHolPUdQWpvVn/F1Z4J6KYV3M5rGO9xgKxh5RAmqt+6LKgOiJAMQ==
     salt: pPHKG55UJYtJ5wU0G9hBvNQJ0DvT0a7T4Fmj4aPB84s=
     algo: scrypt-sha256
@@ -118,6 +179,7 @@ And, a serialized Ed25519 private key looks like so:
     Z: 131072
     r: 16
     p: 1
+```
 
 The Ed25519 private key is encrypted using Scrypt password hashing
 mechanism. A user supplied passphrase to protect the private key
@@ -146,9 +208,12 @@ ensures that the supplied passphrase yields the same value as
 ### Ed25519 Signature
 A generated signature looks like below after serialization:
 
+```yaml
+
     comment: inpfile=/tmp/file.txt
     pkhash: 36z9tCwTIVNwwDlExrB0SQ==
     signature: ow2oBP+buDbEvlNakOrsxgB5Yc/7PYyPVZCkfyu7oahw8BakF4Qf32uswPaKGZ8RVz4uXboYHdZtfrEjCgP/Cg==
+```
 
 Here, ```pkhash`` is a SHA256 of the public key needed to verify
 this signature.
@@ -163,4 +228,5 @@ See the file ``LICENSE.md`` for the full terms of the license.
 ## Author
 Sudhi Herle <sw@herle.net>
 
-.. _signify: https://www.openbsd.org/papers/bsdcan-signify.html
+[1]: https://www.openbsd.org/papers/bsdcan-signify.html
+[2]: https://blog.filippo.io/using-ed25519-keys-for-encryption/

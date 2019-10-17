@@ -18,8 +18,8 @@ import (
 	"io"
 	"os"
 
-	flag "github.com/opencoff/pflag"
 	"github.com/opencoff/go-utils"
+	flag "github.com/opencoff/pflag"
 	"github.com/opencoff/sigtool/sign"
 )
 
@@ -108,7 +108,10 @@ func encrypt(args []string) {
 		outfd = outf
 	}
 
-	var recip []*sign.PublicKey
+	en, err := sign.NewEncryptor(sk)
+	if err != nil {
+		die("%s", err)
+	}
 
 	for i := 0; i < len(args)-1; i++ {
 		fn := args[i]
@@ -116,11 +119,18 @@ func encrypt(args []string) {
 		if err != nil {
 			die("%s", err)
 		}
-		recip = append(recip, pk)
+
+		err = en.AddRecipient(pk)
+		if err != nil {
+			die("%s", err)
+		}
 	}
 
-	encryptFile(sk, recip, infd, outfd)
 
+	err = en.Encrypt(infd, outfd)
+	if err != nil {
+		die("%s", err)
+	}
 }
 
 // sigtool decrypt a.key [file] [-o output]
@@ -132,11 +142,13 @@ func decrypt(args []string) {
 
 	var envpw string
 	var outfile string
+	var pubkey string
 	var pw bool
 
 	fs.StringVarP(&outfile, "outfile", "o", "", "Write the output to file `F`")
 	fs.BoolVarP(&pw, "password", "p", false, "Ask for passphrase to decrypt the private key")
 	fs.StringVarP(&envpw, "env-password", "", "", "Use passphrase from environment variable `E`")
+	fs.StringVarP(&pubkey, "verify-sender", "v", "", "Verify that the sender matches public key in `F`")
 
 	err := fs.Parse(args)
 	if err != nil {
@@ -153,7 +165,6 @@ func decrypt(args []string) {
 	var inf *os.File
 	var pws, infile string
 
-
 	if len(envpw) > 0 {
 		pws = os.Getenv(envpw)
 	} else if pw {
@@ -167,6 +178,15 @@ func decrypt(args []string) {
 	sk, err := sign.ReadPrivateKey(keyfile, pws)
 	if err != nil {
 		die("%s", err)
+	}
+
+	var pk *sign.PublicKey
+
+	if len(pubkey) > 0 {
+		pk, err = sign.ReadPublicKey(pubkey)
+		if err != nil {
+			die("%s", err)
+		}
 	}
 
 	if len(args) > 1 {
@@ -200,14 +220,21 @@ func decrypt(args []string) {
 		outfd = outf
 	}
 
-	decryptFile(sk, infd, outfd)
-}
 
+	d, err := sign.NewDecryptor(infd, pk)
+	if err != nil {
+		die("%s", err)
+	}
 
-func encryptFile(sk *sign.PrivateKey, pks []*sign.PublicKey, infd  io.Reader, outfd io.Writer) {
-}
+	err = d.SetPrivateKey(sk)
+	if err != nil {
+		die("%s", err)
+	}
 
-func decryptFile(sk *sign.PrivateKey, infd io.Reader, outfd io.Writer) {
+	err = d.Decrypt(outfd)
+	if err != nil {
+		die("%s", err)
+	}
 }
 
 

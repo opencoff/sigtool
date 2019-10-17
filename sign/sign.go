@@ -77,6 +77,9 @@ type Signature struct {
 const sk_algo = "scrypt-sha256"
 const sig_algo = "sha512-ed25519"
 
+// Length of Ed25519 Public Key Hash
+const PKHashLength = 16
+
 // Scrypt parameters
 const _N = 1 << 17
 const _r = 16
@@ -132,7 +135,7 @@ type signature struct {
 
 func pkhash(pk []byte) []byte {
 	z := sha256.Sum256(pk)
-	return z[:16]
+	return z[:PKHashLength]
 }
 
 // Generate a new Ed25519 keypair
@@ -220,7 +223,6 @@ func MakePrivateKey(yml []byte, pw string) (*PrivateKey, error) {
 		return nil, fmt.Errorf("can't decode YAML:Verify: %s", err)
 	}
 
-	sk := &PrivateKey{}
 
 	// We take short passwords and extend them
 	pwb := sha512.Sum512([]byte(pw))
@@ -240,10 +242,23 @@ func MakePrivateKey(yml []byte, pw string) (*PrivateKey, error) {
 	}
 
 	// Everything works. Now, decode the key
-	sk.Sk = make([]byte, len(esk.Esk))
+	skb := make([]byte, len(esk.Esk))
 	for i := 0; i < len(esk.Esk); i++ {
-		sk.Sk[i] = esk.Esk[i] ^ xork[i]
+		skb[i] = esk.Esk[i] ^ xork[i]
 	}
+
+	edsk := Ed.PrivateKey(skb)
+	edpk := edsk.Public().(Ed.PublicKey)
+
+	pk := &PublicKey{
+		Pk:   []byte(edpk),
+		hash: pkhash([]byte(edpk)),
+	}
+	sk := &PrivateKey{
+		Sk: skb,
+		pk: pk,
+	}
+
 
 	return sk, nil
 }

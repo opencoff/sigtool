@@ -1,0 +1,23 @@
+syntax="proto3";
+
+//import "gogoproto/gogo.proto"
+
+package sign;
+
+//option (gogoproto.marshaler_all) = true;
+//option (gogoproto.sizer_all) = true;
+//option (gogoproto.unmarshaler_all) = true;
+//option (gogoproto.goproto_getters_all) = false;
+
+message header {
+	uint32 chunk_size = 1;
+	bytes  salt = 2;
+	repeated wrapped_key keys = 3;
+}
+
+message wrapped_key {
+	bytes pk_hash = 1; // hash of Ed25519 PK
+	bytes pk = 2;	    // curve25519 PK
+	bytes nonce = 3;    // AEAD nonce
+	bytes key = 4;	    // AEAD encrypted key
+}

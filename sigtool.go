@@ -306,6 +306,8 @@ Commands:
   generate, g      Generate a new Ed25519 keypair
   sign, s          Sign a file with a private key
   verify, v        Verify a signature against a file and a public key
+  encrypt, e       Encrypt an input file to one or more recipients
+  decrypt, d       Decrypt a file with a private key
 `, Z, Z)
 
 	os.Stdout.Write([]byte(x))

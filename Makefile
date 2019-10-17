@@ -4,11 +4,10 @@ pwd = $(shell pwd)
 .PHONY: all test clean realclean
 
 all:
-	mkdir -p bin
-	go build -o bin/sigtool .
+	./build -s
 
 test:
 	go test ./sign
 
 clean realclean:
-	rm -f bin/sigtool
+	rm -rf bin
