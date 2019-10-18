@@ -241,7 +241,7 @@ type Decryptor struct {
 
 // Create a new decryption context and if 'pk' is given, check that it matches
 // the sender
-func NewDecryptor(rd io.Reader, pk *PublicKey) (*Decryptor, error) {
+func NewDecryptor(rd io.Reader) (*Decryptor, error) {
 	var  b [12]byte
 
 	_, err := io.ReadFull(rd,  b[:])
@@ -322,32 +322,18 @@ func NewDecryptor(rd io.Reader, pk *PublicKey) (*Decryptor, error) {
 
 	}
 
-	d.buf = make([]byte, d.ChunkSize)
-	if pk != nil {
-		validSender := false
-		pkh := pk.Hash()
-		for _, w := range d.Keys {
-			if subtle.ConstantTimeCompare(pkh, w.PkHash) == 1 {
-				validSender = true
-			}
-		}
-
-		if !validSender {
-			return nil, fmt.Errorf("decrypt: Can't find sender's public key in the header")
-		}
-	}
-
 	return d, nil
 }
 
-// Use Private Key 'sk' to decrypt the encrypted keys in the header
-func (d *Decryptor) SetPrivateKey(sk *PrivateKey) error {
+// Use Private Key 'sk' to decrypt the encrypted keys in the header and optionally validate
+// the sender
+func (d *Decryptor) SetPrivateKey(sk *PrivateKey, senderPk *PublicKey) error {
 	var err error
 
 	pkh := sk.PublicKey().Hash()
 	for i, w := range d.Keys {
 		if subtle.ConstantTimeCompare(pkh, w.PkHash) == 1 {
-			d.key, err = w.UnwrapKey(sk)
+			d.key, err = w.UnwrapKey(sk, senderPk)
 			if err != nil {
 				return fmt.Errorf("decrypt: can't unwrap key %d: %s", i, err)
 			}
@@ -368,6 +354,7 @@ havekey:
 	if err != nil {
 		return fmt.Errorf("decrypt: %s", err)
 	}
+	d.buf = make([]byte, int(d.ChunkSize) + d.ae.Overhead())
 	return nil
 }
 
@@ -440,28 +427,72 @@ func (d *Decryptor) decrypt(i int) ([]byte, error) {
 	return p, nil
 }
 
+// Wrap a shared key with the recipient's public key 'pk' by generating an ephemeral
+// Curve25519 keypair. This function does not identify the sender (non-repudiation).
+func (pk *PublicKey) WrapKeyEphemeral(key []byte) (*WrappedKey, error) {
+	var newSK [32]byte
+
+	randread(newSK[:])
+	clamp(newSK[:])
+
+	return wrapKey(pk, key, &newSK)
+}
+
 // given a file-encryption-key, wrap it in the identity of the recipient 'pk' using our
 // secret key. This function identifies the sender.
 func (sk *PrivateKey) WrapKey(pk *PublicKey, key []byte) (*WrappedKey, error) {
-	var shared, theirPK, ourSK [32]byte
+	var ourSK [32]byte
 
 	copy(ourSK[:], sk.toCurve25519SK())
-	copy(theirPK[:], pk.toCurve25519PK())
 
-	curve25519.ScalarMult(&shared, &ourSK, &theirPK)
-
-	return wrapKey(pk, key, theirPK[:], shared[:])
-
+	return wrapKey(pk, key, &ourSK)
 }
 
+
+func wrapKey(pk *PublicKey, k []byte, ourSK *[32]byte) (*WrappedKey, error) {
+	var curvePK, theirPK, shared [32]byte
+
+	copy(theirPK[:], pk.toCurve25519PK())
+	curve25519.ScalarBaseMult(&curvePK, ourSK)
+	curve25519.ScalarMult(&shared, ourSK, &theirPK)
+
+	ek, nonce, err := aeadSeal(k, shared[:], pk.Pk)
+	if err != nil {
+		return nil, fmt.Errorf("wrap: %s", err)
+	}
+
+	return &WrappedKey{
+		PkHash: pk.hash,
+		Pk:     curvePK[:],
+		Nonce:  nonce,
+		Key:    ek,
+	}, nil
+}
+
+
+
 // Unwrap a wrapped key using the private key 'sk'
-func (w *WrappedKey) UnwrapKey(sk *PrivateKey) ([]byte, error) {
+func (w *WrappedKey) UnwrapKey(sk *PrivateKey, senderPk *PublicKey) ([]byte, error) {
 	var shared, theirPK, ourSK [32]byte
 
 	pk := sk.PublicKey()
+
 	copy(ourSK[:], sk.toCurve25519SK())
 	copy(theirPK[:], w.Pk)
 	curve25519.ScalarMult(&shared, &ourSK, &theirPK)
+
+	if senderPk != nil {
+		var cPK, shared2 [32]byte
+
+		curvePK := senderPk.toCurve25519PK()
+
+		copy(cPK[:], curvePK)
+		curve25519.ScalarMult(&shared2, &ourSK, &cPK)
+
+		if subtle.ConstantTimeCompare(shared2[:], shared[:]) != 1 {
+			return nil, fmt.Errorf("unwrap: sender validation failed")
+		}
+	}
 
 	key, err := aeadOpen(w.Key, w.Nonce, shared[:], pk.Pk)
 	if err != nil {
@@ -470,38 +501,6 @@ func (w *WrappedKey) UnwrapKey(sk *PrivateKey) ([]byte, error) {
 	return key, nil
 }
 
-
-// Wrap a shared key with the recipient's public key 'pk' by generating an ephemeral
-// Curve25519 keypair. This function does not identify the sender (non-repudiation).
-func (pk *PublicKey) WrapKeyEphemeral(key []byte) (*WrappedKey, error) {
-	var shared, newSK, newPK, theirPK [32]byte
-
-	randread(newSK[:])
-
-	copy(theirPK[:], pk.toCurve25519PK())
-	curve25519.ScalarBaseMult(&newPK, &newSK)
-	curve25519.ScalarMult(&shared, &newSK, &theirPK)
-
-	// we throw away newSK after deriving the shared key.
-	// The recipient can derive the same key using theirSK and newPK.
-	// (newPK will be marshalled and returned by this function)
-
-	return wrapKey(pk, key, newPK[:], shared[:])
-}
-
-func wrapKey(pk *PublicKey, k, theirPK, shared []byte) (*WrappedKey, error) {
-	ek, nonce, err := aeadSeal(k, shared[:], pk.Pk)
-	if err != nil {
-		return nil, fmt.Errorf("wrap: %s", err)
-	}
-
-	return &WrappedKey{
-		PkHash: pk.hash,
-		Pk:     theirPK,
-		Nonce:  nonce,
-		Key:    ek,
-	}, nil
-}
 
 // Convert an Ed25519 Private Key to Curve25519 Private key
 func (sk *PrivateKey) toCurve25519SK() []byte {

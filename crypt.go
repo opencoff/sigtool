@@ -221,12 +221,12 @@ func decrypt(args []string) {
 	}
 
 
-	d, err := sign.NewDecryptor(infd, pk)
+	d, err := sign.NewDecryptor(infd)
 	if err != nil {
 		die("%s", err)
 	}
 
-	err = d.SetPrivateKey(sk)
+	err = d.SetPrivateKey(sk, pk)
 	if err != nil {
 		die("%s", err)
 	}

@@ -13,45 +13,14 @@ It can sign and verify very large files - it prehashes the files
 with SHA-512 and then signs the SHA-512 checksum. The keys and signatures
 are YAML files and so, human readable.
 
-It can encrypt & decrypt files by converting the Ed25519 keys to their
-corresponding Curve25519 variants. This elliptic co-ordinate transform
-follows [FiloSottile's writeup][2]. The file encryption uses
-AES-GCM-256 (AEAD); the input is broken into chunks and each chunk is
-AEAD encrypted. The default chunk size is 4MB (4 * 1048576 bytes). 
+It can encrypt files for multiple recipients - each of whom is identified
+by their Ed25519 public key. The encryption by default generates ephmeral
+Curve25519 keys and creates pair-wise shared secret for each recipient of
+the encrypted file. The caller can optionally use a specific secret key
+during the encryption process - this has the benefit of also authenticating
+the sender (and the receiver can verify the sender if they possess the
+corresponding public key).
 
-A random 32-byte key is used to actually encrypt the file contents in
-AES-GCM mode. This file-encryption key is **wrapped** using the recipient's
-public key. Thus, a given input file (or stream) can be encrypted to be
-read by multiple recipients - each of whom is identified by their Ed25519
-public keys. The file-encryptionb-key can optionally be wrapped using the
-sender's Private Key - this authenticates the sender. If this private key is
-not provided for the encrypt operation, then `sigtool` generates ephemeral
-Curve25519 keys and wraps the file-encryption key using the ephemeral 
-private key and the recipient's public key.
-
-Every encrypted file starts with a header:
-
-    7 byte magic ("SigTool")
-    1 byte version number
-    4 byte header length
-    32 byte SHA256 of the encryption-header
-
-The encryption-header is described as a protobuf file (sign/hdr.proto):
-
-```protobuf
-    message header {
-        uint32 chunk_size = 1;
-        bytes  salt = 2;
-        repeated wrapped_key keys = 3;
-    }
-
-    message wrapped_key {
-        bytes pk_hash = 1; // hash of Ed25519 PK
-        bytes pk = 2;       // curve25519 PK
-        bytes nonce = 3;    // AEAD nonce
-        bytes key = 4;      // AEAD encrypted key
-    }
-```
 
 ## How do I build it?
 With Go 1.5 and later:
@@ -120,19 +89,35 @@ e.g., to verify the signature of *archive.tar.gz* against
 If the sender wishes to prove to the recipient that they  encrypted
 a file:
 
-   sigtool encrypt -s mykey.key theirkey.pub -o archive.tar.gz.enc archive.tar.gz
+   sigtool encrypt -s sender.key to.pub -o archive.tar.gz.enc archive.tar.gz
 
 
 This will create an encrypted file *archive.tar.gz.enc* such that the
-recipient in possession of *theikey.key* can decrypt it. Furthermore, if
-the recipient has *mykey.pub*, they can verify that the sender is indeed
+recipient in possession of *to.key* can decrypt it. Furthermore, if
+the recipient has *sender.pub*, they can verify that the sender is indeed
 who they expect.
 
+### Decrypt a file and verify the sender
+If the receiver has the public key of the sender, they can verify that
+they indeed sent the file by cryptographically checking the output:
+
+   sigtool decrypt -o archive.tar.gz -v sender.pub to.key archive.tar.gz.enc
+
+Note that the verification is optional and if the `-v` option is not
+used, then decryption will proceed without verifying the sender.
+
 ### Encrypt a file *without* authenticating the sender
+`sigtool` can generate ephemeral keys for encrypting a file such that
+the receiver doesn't need to authenticate the sender:
 
-### Decrypt a file
+   sigtool encrypt to.pub -o archive.tar.gz.enc archive.tar.gz
 
-## How is the private key protected?
+This will create an encrypted file *archive.tar.gz.enc* such that the
+recipient in possession of *to.key* can decrypt it.
+
+## Technical Details
+
+### How is the private key protected?
 The Ed25519 private key is encrypted using a key derived from the
 user supplied pass phrase. This pass phrase is used to derive an
 encryption key using the Scrypt key derivation algorithm. The
@@ -144,10 +129,68 @@ key are hashed via SHA256 and stored along with the encrypted key.
 As an additional security measure, the user supplied pass phrase is
 hashed with SHA512.
 
+### How is the Encryption done?
+The file encryption uses AES-GCM-256 in AEAD mode. The encryption uses
+a random 32-byte AES-256 key. The input is broken into chunks and
+each chunk is individually AEAD encrypted. The default chunk size
+is 4MB (4 * 1048576 bytes). Each chunk generates its own nonce
+from a global salt. The nonce is calculated as a SHA256 hash of
+the salt, the chunk length and the block number.
+
+### What is the public-key cryptography used?
+`sigtool` uses Curve25519 ECC to generate shared secrets between
+pairs of sender & recipients. This pairwise shared secret is expanded
+using HKDF to generate a key-encryption-key. The file-encryption key
+is AEAD encrypted with this key-encryption-key. Thus, each recipient
+has their own individual encrypted key blob.
+
+The Ed25519 keys generated by `sigtool` are transformed to their 
+corresponding Curve25519 points in order to generate the shared secret.
+This elliptic co-ordinate transform follows [FiloSottile's writeup][2].
+
+### Format of the Encrypted File
+Every encrypted file starts with a header:
+
+    7 byte magic ("SigTool")
+    1 byte version number
+    4 byte header length (big endian encoding)
+    32 byte SHA256 of the encryption-header
+
+The encryption-header is described as a protobuf file (sign/hdr.proto):
+
+```protobuf
+    message header {
+        uint32 chunk_size = 1;
+        bytes  salt = 2;
+        repeated wrapped_key keys = 3;
+    }
+
+    message wrapped_key {
+        bytes pk_hash = 1; // hash of Ed25519 PK
+        bytes pk = 2;       // curve25519 PK
+        bytes nonce = 3;    // AEAD nonce
+        bytes key = 4;      // AEAD encrypted key
+    }
+```
+
+The encrypted data immediately follows the headers above. Each encrypted
+chunk is encoded the same way:
+
+```C
+    4 byte chunk length (big endian encoding)
+    chunk data
+    AEAD tag
+```
+
+The chunk data and AEAD tag are treated as an atomic unit for AEAD
+decryption.
+
 ## Understanding the Code
 `src/sign` is a library to generate, verify and store Ed25519 keys
 and signatures.  It uses the extended library (golang.org/x/crypto)
 for the underlying operations.
+
+`src/crypt.go` contains the encryption & decryption code.
 
 The generated keys and signatures are proper YAML files and human
 readable.

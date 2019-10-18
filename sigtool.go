@@ -26,9 +26,6 @@ import (
 	"github.com/opencoff/sigtool/sign"
 )
 
-// This will be filled in by "build"
-var Version string = "1.1"
-
 var Z string = path.Base(os.Args[0])
 
 func main() {
@@ -42,7 +39,7 @@ func main() {
 	mf.Parse(os.Args[1:])
 
 	if ver {
-		fmt.Printf("%s: %s\n", Z, Version)
+		fmt.Printf("%s - %s [%s; %s]\n", Z, ProductVersion, RepoVersion, Buildtime)
 		os.Exit(0)
 	}
 
@@ -345,5 +342,10 @@ func warn(f string, v ...interface{}) {
 	os.Stderr.WriteString(s)
 	os.Stderr.Sync()
 }
+
+// This will be filled in by "build"
+var RepoVersion string = "UNDEFINED"
+var Buildtime string = "UNDEFINED"
+var ProductVersion string = "UNDEFINED"
 
 // vim: ft=go:sw=8:ts=8:noexpandtab:tw=98:
