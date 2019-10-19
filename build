@@ -228,7 +228,7 @@ done
 [ $Dryrun  -gt 0 ] && e=echo
 
 # let every error abort
-set -e
+#set -e
 
 # This fragment can't be in a function - since it exports several vars
 if [ -n "$Arch" ]; then
@@ -304,7 +304,7 @@ if [ -n "$Protobufs" ]; then
     slicksrc=github.com/gogo/protobuf/protoc-gen-gogoslick
     pc=$(type -p protoc)
 
-    [ -z "$pc" ] && die "Need 'protoc' for building .."
+    [ -z "$pc" ] && die "Please install protobuf-tools .."
 
     slick=$(hosttool protoc-gen-gogoslick $Hostbindir $slicksrc) || exit 1
     #if [ ! -f $slick ]; then
