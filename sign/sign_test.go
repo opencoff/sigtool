@@ -14,7 +14,6 @@
 package sign
 
 import (
-	"crypto/rand"
 	"crypto/subtle"
 	"fmt"
 	"io/ioutil"
@@ -55,7 +54,7 @@ func tempdir(t *testing.T) string {
 	var b [10]byte
 
 	dn := os.TempDir()
-	rand.Read(b[:])
+	randread(b[:])
 
 	tmp := path.Join(dn, fmt.Sprintf("%x", b[:]))
 	err := os.MkdirAll(tmp, 0755)
@@ -90,6 +89,7 @@ Z: 65536
 r: 8
 p: 1
 `
+
 
 // #1. Create new key pair, and read them back.
 func Test0(t *testing.T) {
@@ -154,7 +154,7 @@ func Test1(t *testing.T) {
 
 	var ck [64]byte // simulates sha512 sum
 
-	rand.Read(ck[:])
+	randread(ck[:])
 
 	pk := &kp.Pub
 	sk := &kp.Sec
@@ -167,7 +167,7 @@ func Test1(t *testing.T) {
 	assert(ss.IsPKMatch(pk), "pk match fail")
 
 	// Corrupt the pkhash and see
-	rand.Read(ss.pkhash[:])
+	randread(ss.pkhash)
 	assert(!ss.IsPKMatch(pk), "corrupt pk match fail")
 
 	// Incorrect checksum == should fail verification
@@ -204,7 +204,7 @@ func Test1(t *testing.T) {
 	assert(err == nil, "file.dat creat file")
 
 	for i := 0; i < 8; i++ {
-		rand.Read(buf[:])
+		randread(buf[:])
 		n, err := fd.Write(buf[:])
 		assert(err == nil, fmt.Sprintf("file.dat write fail: %s", err))
 		assert(n == 8192, fmt.Sprintf("file.dat i/o fail: exp 8192 saw %v", n))
@@ -300,7 +300,7 @@ func benchVerify(b *testing.B, buf []byte, sig *Signature, pk *PublicKey) {
 
 func randbuf(sz uint) []byte {
 	b := make([]byte, sz)
-	rand.Read(b)
+	randread(b)
 	return b
 }
 

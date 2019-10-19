@@ -344,10 +344,13 @@ func (sk *PrivateKey) SignMessage(ck []byte, comment string) (*Signature, error)
 		return nil, fmt.Errorf("can't sign %x: %s", ck, err)
 	}
 
-	return &Signature{
+	ss := &Signature{
 		Sig:    sig,
-		pkhash: sk.pk.hash,
-	}, nil
+		pkhash: make([]byte, len(sk.pk.hash)),
+	}
+
+	copy(ss.pkhash, sk.pk.hash)
+	return ss, nil
 }
 
 // Read and sign a file
