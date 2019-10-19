@@ -247,6 +247,16 @@ func MakePrivateKey(yml []byte, pw string) (*PrivateKey, error) {
 		skb[i] = esk.Esk[i] ^ xork[i]
 	}
 
+	return PrivateKeyFromBytes(skb)
+}
+
+
+// Make a private key from 64-bytes of extended Ed25519 key
+func PrivateKeyFromBytes(skb []byte) (*PrivateKey, error) {
+	if len(skb) != 64 {
+		return nil, fmt.Errorf("private key is malformed (len %d!)", len(skb))
+	}
+
 	edsk := Ed.PrivateKey(skb)
 	edpk := edsk.Public().(Ed.PublicKey)
 
@@ -259,9 +269,9 @@ func MakePrivateKey(yml []byte, pw string) (*PrivateKey, error) {
 		pk: pk,
 	}
 
-
 	return sk, nil
 }
+
 
 // Given a secret key, return the corresponding Public Key
 func (sk *PrivateKey) PublicKey() *PublicKey {
@@ -461,24 +471,29 @@ func MakePublicKey(yml []byte) (*PublicKey, error) {
 		return nil, fmt.Errorf("can't parse YAML: %s", err)
 	}
 
-	pk := &PublicKey{}
 	b64 := base64.StdEncoding.DecodeString
+	var pk []byte
 
-	if pk.Pk, err = b64(spk.Pk); err != nil {
+	if pk, err = b64(spk.Pk); err != nil {
 		return nil, fmt.Errorf("can't decode YAML:Pk: %s", err)
 	}
 
-	// Simple sanity checks
-	if len(pk.Pk) == 0 {
-		return nil, fmt.Errorf("public key data is empty?")
+	return PublicKeyFromBytes(pk)
+}
+
+
+// Make a public key from a byte string
+func PublicKeyFromBytes(b []byte) (*PublicKey, error) {
+	if len(b) != 32 {
+		return nil, fmt.Errorf("public key is malformed (len %d!)", len(b))
 	}
 
-	if len(pk.Pk) != 32 {
-		return nil, fmt.Errorf("public key is malformed (len %d!)", len(pk.Pk))
+	pk := &PublicKey{
+		Pk: make([]byte, 32),
+		hash: pkhash(b),
 	}
 
-	pk.hash = pkhash(pk.Pk)
-
+	copy(pk.Pk, b)
 	return pk, nil
 }
 
