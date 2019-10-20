@@ -126,7 +126,6 @@ func encrypt(args []string) {
 		}
 	}
 
-
 	err = en.Encrypt(infd, outfd)
 	if err != nil {
 		die("%s", err)
@@ -220,7 +219,6 @@ func decrypt(args []string) {
 		outfd = outf
 	}
 
-
 	d, err := sign.NewDecryptor(infd)
 	if err != nil {
 		die("%s", err)
@@ -236,7 +234,6 @@ func decrypt(args []string) {
 		die("%s", err)
 	}
 }
-
 
 func encryptUsage(fs *flag.FlagSet) {
 	fmt.Printf(`%s encrypt: Encrypt a file to one or more recipients.

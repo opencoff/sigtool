@@ -90,7 +90,6 @@ r: 8
 p: 1
 `
 
-
 // #1. Create new key pair, and read them back.
 func Test0(t *testing.T) {
 	assert := newAsserter(t)

@@ -223,7 +223,6 @@ func MakePrivateKey(yml []byte, pw string) (*PrivateKey, error) {
 		return nil, fmt.Errorf("can't decode YAML:Verify: %s", err)
 	}
 
-
 	// We take short passwords and extend them
 	pwb := sha512.Sum512([]byte(pw))
 
@@ -250,7 +249,6 @@ func MakePrivateKey(yml []byte, pw string) (*PrivateKey, error) {
 	return PrivateKeyFromBytes(skb)
 }
 
-
 // Make a private key from 64-bytes of extended Ed25519 key
 func PrivateKeyFromBytes(skb []byte) (*PrivateKey, error) {
 	if len(skb) != 64 {
@@ -271,7 +269,6 @@ func PrivateKeyFromBytes(skb []byte) (*PrivateKey, error) {
 
 	return sk, nil
 }
-
 
 // Given a secret key, return the corresponding Public Key
 func (sk *PrivateKey) PublicKey() *PublicKey {
@@ -481,7 +478,6 @@ func MakePublicKey(yml []byte) (*PublicKey, error) {
 	return PublicKeyFromBytes(pk)
 }
 
-
 // Make a public key from a byte string
 func PublicKeyFromBytes(b []byte) (*PublicKey, error) {
 	if len(b) != 32 {
@@ -489,7 +485,7 @@ func PublicKeyFromBytes(b []byte) (*PublicKey, error) {
 	}
 
 	pk := &PublicKey{
-		Pk: make([]byte, 32),
+		Pk:   make([]byte, 32),
 		hash: pkhash(b),
 	}
 
