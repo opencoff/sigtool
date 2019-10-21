@@ -1,4 +1,4 @@
-// cipher.go -- Ed25519 based encrypt/decrypt
+// encrypt.go -- Ed25519 based encrypt/decrypt
 //
 // (c) 2016 Sudhi Herle <sudhi@herle.net>
 //
@@ -14,21 +14,20 @@
 package sign
 
 import (
+	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/ed25519"
 	"crypto/sha256"
 	"crypto/sha512"
 	"crypto/subtle"
+	"encoding/binary"
 	"fmt"
 	"golang.org/x/crypto/curve25519"
 	"golang.org/x/crypto/hkdf"
 	"io"
 	"math/big"
-	"bytes"
-	"encoding/binary"
 )
-
 
 // Encryption chunk size = 4MB
 const chunkSize int = 4 * 1048576
@@ -37,28 +36,35 @@ const _Magic = "SigTool"
 const _MagicLen = len(_Magic)
 const _AEADNonceLen = 32
 
-
 // Encryptor holds the encryption context
 type Encryptor struct {
 	Header
-	key [32]byte  // file encryption key
+	key [32]byte // file encryption key
 
-	ae  cipher.AEAD
-	sender *PrivateKey
+	ae      cipher.AEAD
+	sender  *PrivateKey
 	started bool
 
 	buf []byte
 }
 
-// Create a new Encryption context and use the optional private key 'sk' for 
+// Create a new Encryption context and use the optional private key 'sk' for
 // signing any recipient keys. If 'sk' is nil, then ephmeral Curve25519 keys
 // are generated and used with recipient's public key.
-func NewEncryptor(sk *PrivateKey) (*Encryptor, error) {
+func NewEncryptor(sk *PrivateKey, blksize uint64) (*Encryptor, error) {
+
+	if blksize > (16 * 1048576) {
+		return nil, fmt.Errorf("encrypt: Blocksize is too large (max 16M)")
+	}
+
+	if blksize == 0 {
+		blksize = uint64(chunkSize)
+	}
 
 	e := &Encryptor{
 		Header: Header{
-			ChunkSize: uint32(chunkSize),
-			Salt:	   make([]byte, _AEADNonceLen),
+			ChunkSize: uint32(blksize),
+			Salt:      make([]byte, _AEADNonceLen),
 		},
 
 		sender: sk,
@@ -77,10 +83,9 @@ func NewEncryptor(sk *PrivateKey) (*Encryptor, error) {
 		return nil, fmt.Errorf("encrypt: %s", err)
 	}
 
-	e.buf = make([]byte, chunkSize + 4 + e.ae.Overhead())
+	e.buf = make([]byte, chunkSize+4+e.ae.Overhead())
 	return e, nil
 }
-
 
 // Add a new recipient to this encryption context.
 func (e *Encryptor) AddRecipient(pk *PublicKey) error {
@@ -104,7 +109,6 @@ func (e *Encryptor) AddRecipient(pk *PublicKey) error {
 	return nil
 }
 
-
 // Begin the encryption process by writing the header
 func (e *Encryptor) start(wr io.Writer) error {
 	msize := e.Size()
@@ -112,16 +116,16 @@ func (e *Encryptor) start(wr io.Writer) error {
 	// marshal the header and recipients
 	hdrlen := _MagicLen + 1 + 4 + sha256.Size
 
-	buf := make([]byte, hdrlen + msize)
+	buf := make([]byte, hdrlen+msize)
 	hdrbuf := buf[hdrlen:]
 
 	copy(buf[:], []byte(_Magic))
 
-	buf[_MagicLen] = 1  // file version#
+	buf[_MagicLen] = 1 // file version#
 
 	// The fixed header is the magic _and _ the length of the variable segment.
 	// So, we capture the length of the variable portion first.
-	binary.BigEndian.PutUint32(buf[_MagicLen + 1:], uint32(sha256.Size + msize))
+	binary.BigEndian.PutUint32(buf[_MagicLen+1:], uint32(sha256.Size+msize))
 
 	// Now marshal the variable portion
 	_, err := e.MarshalToSizedBuffer(hdrbuf)
@@ -130,7 +134,7 @@ func (e *Encryptor) start(wr io.Writer) error {
 	}
 
 	// and calculate the header checksum
-	cksum := buf[_MagicLen + 1 + 4:]
+	cksum := buf[_MagicLen+1+4:]
 	h := sha256.New()
 	h.Write(hdrbuf)
 	h.Sum(cksum[:0])
@@ -160,7 +164,6 @@ func fullwrite(buf []byte, wr io.Writer) error {
 	}
 	return nil
 }
-
 
 // Encrypt the input stream 'rd' and write encrypted stream to 'wr'
 func (e *Encryptor) Encrypt(rd io.Reader, wr io.Writer) error {
@@ -204,7 +207,7 @@ func (e *Encryptor) encrypt(buf []byte, wr io.Writer, i int) error {
 	var b [8]byte
 	var noncebuf [32]byte
 
-	binary.BigEndian.PutUint32(b[:4], uint32(e.ae.Overhead() + len(buf)))
+	binary.BigEndian.PutUint32(b[:4], uint32(e.ae.Overhead()+len(buf)))
 	binary.BigEndian.PutUint32(b[4:], uint32(i))
 
 	h := sha256.New()
@@ -225,26 +228,24 @@ func (e *Encryptor) encrypt(buf []byte, wr io.Writer, i int) error {
 	return nil
 }
 
-
 // Decryptor holds the decryption context
 type Decryptor struct {
 	Header
 
-	ae cipher.AEAD
-	rd io.Reader
+	ae  cipher.AEAD
+	rd  io.Reader
 	buf []byte
 
 	// Decrypted key
 	key []byte
 }
 
-
 // Create a new decryption context and if 'pk' is given, check that it matches
 // the sender
 func NewDecryptor(rd io.Reader) (*Decryptor, error) {
-	var  b [12]byte
+	var b [12]byte
 
-	_, err := io.ReadFull(rd,  b[:])
+	_, err := io.ReadFull(rd, b[:])
 	if err != nil {
 		return nil, err
 	}
@@ -281,7 +282,7 @@ func NewDecryptor(rd io.Reader) (*Decryptor, error) {
 	}
 
 	d := &Decryptor{
-		rd:  rd,
+		rd: rd,
 	}
 
 	err = d.Header.Unmarshal(hdr)
@@ -289,7 +290,7 @@ func NewDecryptor(rd io.Reader) (*Decryptor, error) {
 		return nil, fmt.Errorf("decrypt: decode error: %s", err)
 	}
 
-	if d.ChunkSize == 0 || d.ChunkSize > (16 * 1048576) {
+	if d.ChunkSize == 0 || d.ChunkSize > (16*1048576) {
 		return nil, fmt.Errorf("decrypt: invalid chunkSize %d", d.ChunkSize)
 	}
 
@@ -343,7 +344,6 @@ func (d *Decryptor) SetPrivateKey(sk *PrivateKey, senderPk *PublicKey) error {
 
 	return fmt.Errorf("decrypt: Can't find any public key to match the given private key")
 
-
 havekey:
 	aes, err := aes.NewCipher(d.key)
 	if err != nil {
@@ -354,7 +354,7 @@ havekey:
 	if err != nil {
 		return fmt.Errorf("decrypt: %s", err)
 	}
-	d.buf = make([]byte, int(d.ChunkSize) + d.ae.Overhead())
+	d.buf = make([]byte, int(d.ChunkSize)+d.ae.Overhead())
 	return nil
 }
 
@@ -362,7 +362,6 @@ havekey:
 func (d *Decryptor) WrappedKeys() []*WrappedKey {
 	return d.Keys
 }
-
 
 // Decrypt the file and write to 'wr'
 func (d *Decryptor) Decrypt(wr io.Writer) error {
@@ -378,7 +377,7 @@ func (d *Decryptor) Decrypt(wr io.Writer) error {
 		if len(c) == 0 {
 			return nil
 		}
-		
+
 		if len(c) > 0 {
 			err = fullwrite(c, wr)
 			if err != nil {
@@ -402,7 +401,6 @@ func (d *Decryptor) decrypt(i int) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("decrypt: can't read chunk %d length: %s", i, err)
 	}
-
 
 	chunklen := int(binary.BigEndian.Uint32(b[:4]))
 	binary.BigEndian.PutUint32(b[4:], uint32(i))
@@ -448,7 +446,6 @@ func (sk *PrivateKey) WrapKey(pk *PublicKey, key []byte) (*WrappedKey, error) {
 	return wrapKey(pk, key, &ourSK)
 }
 
-
 func wrapKey(pk *PublicKey, k []byte, ourSK *[32]byte) (*WrappedKey, error) {
 	var curvePK, theirPK, shared [32]byte
 
@@ -468,8 +465,6 @@ func wrapKey(pk *PublicKey, k []byte, ourSK *[32]byte) (*WrappedKey, error) {
 		Key:    ek,
 	}, nil
 }
-
-
 
 // Unwrap a wrapped key using the private key 'sk'
 func (w *WrappedKey) UnwrapKey(sk *PrivateKey, senderPk *PublicKey) ([]byte, error) {
@@ -500,7 +495,6 @@ func (w *WrappedKey) UnwrapKey(sk *PrivateKey, senderPk *PublicKey) ([]byte, err
 	}
 	return key, nil
 }
-
 
 // Convert an Ed25519 Private Key to Curve25519 Private key
 func (sk *PrivateKey) toCurve25519SK() []byte {
@@ -565,8 +559,7 @@ func expand(shared, pk []byte) ([]byte, error) {
 	return kek, err
 }
 
-
-// seal the data via AEAD after suitably expanding 'shared' 
+// seal the data via AEAD after suitably expanding 'shared'
 func aeadSeal(data, shared, pk []byte) ([]byte, []byte, error) {
 	kek, err := expand(shared[:], pk)
 	if err != nil {
@@ -586,7 +579,7 @@ func aeadSeal(data, shared, pk []byte) ([]byte, []byte, error) {
 	noncesize := ae.NonceSize()
 	tagsize := ae.Overhead()
 
-	buf := make([]byte, tagsize + len(kek))
+	buf := make([]byte, tagsize+len(kek))
 	nonce := make([]byte, noncesize)
 
 	randread(nonce)
@@ -623,7 +616,6 @@ func aeadOpen(data, nonce, shared, pk []byte) ([]byte, error) {
 
 	return c, nil
 }
-
 
 func clamp(k []byte) []byte {
 	k[0] &= 248
