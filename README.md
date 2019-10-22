@@ -89,7 +89,7 @@ e.g., to verify the signature of *archive.tar.gz* against
 If the sender wishes to prove to the recipient that they  encrypted
 a file:
 
-   sigtool encrypt -s sender.key to.pub -o archive.tar.gz.enc archive.tar.gz
+    sigtool encrypt -s sender.key to.pub -o archive.tar.gz.enc archive.tar.gz
 
 
 This will create an encrypted file *archive.tar.gz.enc* such that the
@@ -101,7 +101,7 @@ who they expect.
 If the receiver has the public key of the sender, they can verify that
 they indeed sent the file by cryptographically checking the output:
 
-   sigtool decrypt -o archive.tar.gz -v sender.pub to.key archive.tar.gz.enc
+    sigtool decrypt -o archive.tar.gz -v sender.pub to.key archive.tar.gz.enc
 
 Note that the verification is optional and if the `-v` option is not
 used, then decryption will proceed without verifying the sender.
@@ -110,7 +110,7 @@ used, then decryption will proceed without verifying the sender.
 `sigtool` can generate ephemeral keys for encrypting a file such that
 the receiver doesn't need to authenticate the sender:
 
-   sigtool encrypt to.pub -o archive.tar.gz.enc archive.tar.gz
+    sigtool encrypt to.pub -o archive.tar.gz.enc archive.tar.gz
 
 This will create an encrypted file *archive.tar.gz.enc* such that the
 recipient in possession of *to.key* can decrypt it.
