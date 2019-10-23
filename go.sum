@@ -4,6 +4,8 @@ github.com/kisielk/errcheck v1.2.0/go.mod h1:/BMXB+zMLi60iA8Vv6Ksmxu/1UDYcXs4uQL
 github.com/kisielk/gotool v1.0.0/go.mod h1:XhKaO+MFFWcvkIS/tQcRk01m1F5IRFswLeQ+oQHNcck=
 github.com/opencoff/go-utils v0.3.0 h1:/TQXjf50o3GSB9MItog5L8Gf4GWJ4B5+rmqjB4g2RZQ=
 github.com/opencoff/go-utils v0.3.0/go.mod h1:c+7QUAiCCHcNH6OGvsZ0fviG7cgse8Y3ucg+xy7sGXM=
+github.com/opencoff/go-utils v0.4.0 h1:pu08Om//u2+YGvLkHa2CyL6eI+/1J0bXih1Z6nuITp8=
+github.com/opencoff/go-utils v0.4.0/go.mod h1:c+7QUAiCCHcNH6OGvsZ0fviG7cgse8Y3ucg+xy7sGXM=
 github.com/opencoff/pflag v0.3.3 h1:yohZkwYGPkB34WXvUQzU5GyLhImnjfePDARUaE8me3U=
 github.com/opencoff/pflag v0.3.3/go.mod h1:mTLzGGUGda1Av3d34iAJlh0JIlRxmFZtmc6qoWPspK0=
 golang.org/x/crypto v0.0.0-20190308221718-c2843e01d9a2/go.mod h1:djNgcEr1/C05ACkg1iLfiJU5Ep61QUkGW8qpdssI0+w=

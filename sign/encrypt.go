@@ -1,4 +1,4 @@
-// cipher.go -- Ed25519 based encrypt/decrypt
+// encrypt.go -- Ed25519 based encrypt/decrypt
 //
 // (c) 2016 Sudhi Herle <sudhi@herle.net>
 //
@@ -31,6 +31,7 @@ import (
 
 // Encryption chunk size = 4MB
 const chunkSize int = 4 * 1048576
+const maxChunkSize int = 16 * 1048576
 
 const _Magic = "SigTool"
 const _MagicLen = len(_Magic)
@@ -51,11 +52,19 @@ type Encryptor struct {
 // Create a new Encryption context and use the optional private key 'sk' for
 // signing any recipient keys. If 'sk' is nil, then ephmeral Curve25519 keys
 // are generated and used with recipient's public key.
-func NewEncryptor(sk *PrivateKey) (*Encryptor, error) {
+func NewEncryptor(sk *PrivateKey, blksize uint64) (*Encryptor, error) {
+
+	if blksize >= uint64(maxChunkSize) {
+		return nil, fmt.Errorf("encrypt: Blocksize is too large (max 16M)")
+	}
+
+	if blksize == 0 {
+		blksize = uint64(chunkSize)
+	}
 
 	e := &Encryptor{
 		Header: Header{
-			ChunkSize: uint32(chunkSize),
+			ChunkSize: uint32(blksize),
 			Salt:      make([]byte, _AEADNonceLen),
 		},
 
@@ -282,7 +291,7 @@ func NewDecryptor(rd io.Reader) (*Decryptor, error) {
 		return nil, fmt.Errorf("decrypt: decode error: %s", err)
 	}
 
-	if d.ChunkSize == 0 || d.ChunkSize > (16*1048576) {
+	if d.ChunkSize == 0 || d.ChunkSize >= uint32(maxChunkSize) {
 		return nil, fmt.Errorf("decrypt: invalid chunkSize %d", d.ChunkSize)
 	}
 
@@ -397,7 +406,7 @@ func (d *Decryptor) decrypt(i int) ([]byte, error) {
 	chunklen := int(binary.BigEndian.Uint32(b[:4]))
 
 	// Sanity check - in case of corrupt header
-	if chunklen > (d.ae.Overhead()+chunkSize) {
+	if chunklen > (d.ae.Overhead() + chunkSize) {
 		return nil, fmt.Errorf("decrypt: chunksize is too large (%d)", chunklen)
 	}
 
