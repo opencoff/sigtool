@@ -87,13 +87,13 @@ func main() {
 // Run the generate command
 func gen(args []string) {
 
-	var pw, help, force bool
+	var nopw, help, force bool
 	var comment string
 	var envpw string
 
 	fs := flag.NewFlagSet("generate", flag.ExitOnError)
 	fs.BoolVarP(&help, "help", "h", false, "Show this help and exit")
-	fs.BoolVarP(&pw, "password", "p", false, "Ask for passphrase to encrypt the private key")
+	fs.BoolVarP(&nopw, "no-password", "", false, "Don't ask for a password for the private key")
 	fs.StringVarP(&comment, "comment", "c", "", "Use `C` as the text comment for the keys")
 	fs.StringVarP(&envpw, "env-password", "E", "", "Use passphrase from environment variable `E`")
 	fs.BoolVarP(&force, "force", "F", false, "Overwrite the output file if it exists")
@@ -124,24 +124,29 @@ Options:
 		die("Public/Private key files (%s.key, %s.pub) exist. Won't overwrite!", bn, bn)
 	}
 
-	var pws string
 	var err error
-
-	if len(envpw) > 0 {
-		pws = os.Getenv(envpw)
-	} else if pw {
-		pws, err = utils.Askpass("Enter passphrase for private key", true)
-		if err != nil {
-			die("%s", err)
-		}
-	}
 
 	kp, err := sign.NewKeypair()
 	if err != nil {
 		die("%s", err)
 	}
 
-	err = kp.Serialize(bn, comment, pws)
+	err = kp.Serialize(bn, comment, func() ([]byte, error) {
+		if nopw {
+			return nil, nil
+		}
+
+		var pws string
+		if len(envpw) > 0 {
+			pws = os.Getenv(envpw)
+		} else {
+			pws, err = utils.Askpass("Enter passphrase for private key", true)
+			if err != nil {
+				die("%s", err)
+			}
+		}
+		return []byte(pws), nil
+	})
 	if err != nil {
 		die("%s", err)
 	}
@@ -149,13 +154,13 @@ Options:
 
 // Run the 'sign' command.
 func signify(args []string) {
-	var pw, help bool
+	var nopw, help bool
 	var output string
 	var envpw string
 
 	fs := flag.NewFlagSet("sign", flag.ExitOnError)
 	fs.BoolVarP(&help, "help", "h", false, "Show this help and exit")
-	fs.BoolVarP(&pw, "password", "p", false, "Ask for passphrase to decrypt the private key")
+	fs.BoolVarP(&nopw, "no-password", "", false, "Don't ask for a password for the private key")
 	fs.StringVarP(&envpw, "env-password", "E", "", "Use passphrase from environment variable `E`")
 	fs.StringVarP(&output, "output", "o", "", "Write signature to file `F`")
 
@@ -182,23 +187,29 @@ Options:
 	fn := args[1]
 	outf := fmt.Sprintf("%s.sig", fn)
 
-	var pws string
 	var err error
-
-	if len(envpw) > 0 {
-		pws = os.Getenv(envpw)
-	} else if pw {
-		pws, err = utils.Askpass("Enter passphrase for private key", false)
-		if err != nil {
-			die("%s", err)
-		}
-	}
 
 	if len(output) > 0 {
 		outf = output
 	}
 
-	sk, err := sign.ReadPrivateKey(kn, pws)
+	sk, err := sign.ReadPrivateKey(kn, func() ([]byte, error) {
+		if nopw {
+			return nil, nil
+		}
+
+		var pws string
+		if len(envpw) > 0 {
+			pws = os.Getenv(envpw)
+		} else {
+			pws, err = utils.Askpass("Enter passphrase for private key", false)
+			if err != nil {
+				die("%s", err)
+			}
+		}
+
+		return []byte(pws), nil
+	})
 	if err != nil {
 		die("%s", err)
 	}

@@ -20,6 +20,7 @@
 package sign
 
 import (
+	"bytes"
 	"crypto"
 	"crypto/rand"
 	"crypto/sha256"
@@ -54,6 +55,9 @@ type PrivateKey struct {
 // Public Ed25519 key
 type PublicKey struct {
 	Pk []byte
+
+	// Comment string
+	Comment string
 
 	// Curve25519 point corresponding to this Ed25519 key
 	ck []byte
@@ -163,7 +167,7 @@ func NewKeypair() (*Keypair, error) {
 // goes in $bn.key.
 // If password is non-empty, then the private key is encrypted
 // before writing to disk.
-func (kp *Keypair) Serialize(bn, comment string, pw string) error {
+func (kp *Keypair) Serialize(bn, comment string, getpw func() ([]byte, error)) error {
 
 	sk := &kp.Sec
 	pk := &kp.Pub
@@ -176,7 +180,7 @@ func (kp *Keypair) Serialize(bn, comment string, pw string) error {
 		return fmt.Errorf("Can't serialize to %s: %s", pkf, err)
 	}
 
-	err = sk.serialize(skf, comment, pw)
+	err = sk.serialize(skf, comment, getpw)
 	if err != nil {
 		return fmt.Errorf("Can't serialize to %s: %s", pkf, err)
 	}
@@ -186,18 +190,25 @@ func (kp *Keypair) Serialize(bn, comment string, pw string) error {
 
 // Read the private key in 'fn', optionally decrypting it using
 // password 'pw' and create new instance of PrivateKey
-func ReadPrivateKey(fn string, pw string) (*PrivateKey, error) {
+func ReadPrivateKey(fn string, getpw func() ([]byte, error)) (*PrivateKey, error) {
 	yml, err := ioutil.ReadFile(fn)
 	if err != nil {
 		return nil, err
 	}
 
-	return MakePrivateKey(yml, pw)
+	if bytes.Index(yml, []byte("OPENSSH PRIVATE KEY-")) > 0 {
+		return parseSSHPrivateKey(yml, getpw)
+	}
+
+	if pw, err := getpw(); err == nil {
+		return MakePrivateKey(yml, pw)
+	}
+	return nil, err
 }
 
 // Make a private key from bytes 'yml' and password 'pw'. The bytes
 // are assumed to be serialized version of the private key.
-func MakePrivateKey(yml []byte, pw string) (*PrivateKey, error) {
+func MakePrivateKey(yml []byte, pw []byte) (*PrivateKey, error) {
 	var ssk serializedPrivKey
 
 	err := yaml.Unmarshal(yml, &ssk)
@@ -224,7 +235,7 @@ func MakePrivateKey(yml []byte, pw string) (*PrivateKey, error) {
 	}
 
 	// We take short passwords and extend them
-	pwb := sha512.Sum512([]byte(pw))
+	pwb := sha512.Sum512(pw)
 
 	xork, err := scrypt.Key(pwb[:], esk.Salt, int(esk.N), int(esk.r), int(esk.p), len(esk.Esk))
 	if err != nil {
@@ -250,10 +261,13 @@ func MakePrivateKey(yml []byte, pw string) (*PrivateKey, error) {
 }
 
 // Make a private key from 64-bytes of extended Ed25519 key
-func PrivateKeyFromBytes(skb []byte) (*PrivateKey, error) {
-	if len(skb) != 64 {
-		return nil, fmt.Errorf("private key is malformed (len %d!)", len(skb))
+func PrivateKeyFromBytes(buf []byte) (*PrivateKey, error) {
+	if len(buf) != 64 {
+		return nil, fmt.Errorf("private key is malformed (len %d!)", len(buf))
 	}
+
+	skb := make([]byte, 64)
+	copy(skb, buf)
 
 	edsk := Ed.PrivateKey(skb)
 	edpk := edsk.Public().(Ed.PublicKey)
@@ -283,16 +297,19 @@ func (pk *PublicKey) Hash() []byte {
 // Serialize the private key to a file
 // Format: YAML
 // All []byte are in base64 (RawEncoding)
-func (sk *PrivateKey) serialize(fn, comment string, pw string) error {
+func (sk *PrivateKey) serialize(fn, comment string, getpw func() ([]byte, error)) error {
+
+	pw, err := getpw()
+	if err != nil {
+		return err
+	}
 
 	b64 := base64.StdEncoding.EncodeToString
 	esk := &encPrivKey{}
 	ssk := &serializedPrivKey{Comment: comment}
 
-	// Even with an empty password, we still encrypt and store.
-
 	// expand the password into 64 bytes
-	pwb := sha512.Sum512([]byte(pw))
+	pwb := sha512.Sum512(pw)
 
 	esk.N = _N
 	esk.r = _r
@@ -455,7 +472,12 @@ func ReadPublicKey(fn string) (*PublicKey, error) {
 		return nil, err
 	}
 
-	return MakePublicKey(yml)
+	// first try to parse as a ssh key
+	pk, err := parseSSHPublicKey(yml)
+	if err != nil {
+		pk, err = MakePublicKey(yml)
+	}
+	return pk, err
 }
 
 // Parse a serialized public in 'yml' and return the resulting
@@ -469,13 +491,17 @@ func MakePublicKey(yml []byte) (*PublicKey, error) {
 	}
 
 	b64 := base64.StdEncoding.DecodeString
-	var pk []byte
+	var pkb []byte
 
-	if pk, err = b64(spk.Pk); err != nil {
+	if pkb, err = b64(spk.Pk); err != nil {
 		return nil, fmt.Errorf("can't decode YAML:Pk: %s", err)
 	}
 
-	return PublicKeyFromBytes(pk)
+	if pk, err := PublicKeyFromBytes(pkb); err == nil {
+		pk.Comment = spk.Comment
+		return pk, nil
+	}
+	return nil, err
 }
 
 // Make a public key from a byte string

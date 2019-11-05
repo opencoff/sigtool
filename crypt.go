@@ -16,7 +16,9 @@ package main
 import (
 	"fmt"
 	"io"
+	"io/ioutil"
 	"os"
+	"strings"
 
 	"github.com/opencoff/go-utils"
 	flag "github.com/opencoff/pflag"
@@ -34,12 +36,12 @@ func encrypt(args []string) {
 	var outfile string
 	var keyfile string
 	var envpw string
-	var pw bool
+	var nopw bool
 	var sblksize string
 
 	fs.StringVarP(&outfile, "outfile", "o", "", "Write the output to file `F`")
 	fs.StringVarP(&keyfile, "sign", "s", "", "Sign using private key `S`")
-	fs.BoolVarP(&pw, "password", "p", false, "Ask for passphrase to decrypt the private key")
+	fs.BoolVarP(&nopw, "no-password", "", false, "Don't ask for passphrase to decrypt the private key")
 	fs.StringVarP(&envpw, "env-password", "", "", "Use passphrase from environment variable `E`")
 	fs.StringVarP(&sblksize, "block-size", "B", "4M", "Use `S` as the encryption block size")
 
@@ -55,19 +57,23 @@ func encrypt(args []string) {
 
 	var pws, infile string
 
-	if len(envpw) > 0 {
-		pws = os.Getenv(envpw)
-	} else if pw {
-		pws, err = utils.Askpass("Enter passphrase for private key", false)
-		if err != nil {
-			die("%s", err)
-		}
-	}
-
 	var sk *sign.PrivateKey
 
 	if len(keyfile) > 0 {
-		sk, err = sign.ReadPrivateKey(keyfile, pws)
+		sk, err = sign.ReadPrivateKey(keyfile, func() ([]byte, error) {
+			if nopw {
+				return nil, nil
+			}
+			if len(envpw) > 0 {
+				pws = os.Getenv(envpw)
+			} else {
+				pws, err = utils.Askpass("Enter passphrase for private key", false)
+				if err != nil {
+					die("%s", err)
+				}
+			}
+			return []byte(pws), nil
+		})
 		if err != nil {
 			die("%s", err)
 		}
@@ -75,7 +81,7 @@ func encrypt(args []string) {
 
 	args = fs.Args()
 	if len(args) < 2 {
-		die("Insufficient args. Try '%s --help'")
+		die("Insufficient args. Try '%s --help'", os.Args[0])
 	}
 
 	var infd io.Reader = os.Stdin
@@ -90,6 +96,27 @@ func encrypt(args []string) {
 
 			infd = inf
 		}
+	}
+
+	// Lets try to read the authorized files
+	home, err := os.UserHomeDir()
+	if err != nil {
+		die("can't find homedir for this user")
+	}
+
+	authkeys := fmt.Sprintf("%s/.ssh/authorized_keys", home)
+	authdata, err := ioutil.ReadFile(authkeys)
+	if err != nil {
+		if err != os.ErrNotExist {
+			die("can't open %s: %s", authkeys, err)
+		}
+	}
+
+	pka, err := sign.ParseAuthorizedKeys(authdata)
+	keymap := make(map[string]*sign.PublicKey)
+
+	for _, pk := range pka {
+		keymap[pk.Comment] = pk
 	}
 
 	if len(outfile) > 0 && outfile != "-" {
@@ -120,17 +147,37 @@ func encrypt(args []string) {
 		die("%s", err)
 	}
 
+	errs := 0
 	for i := 0; i < len(args)-1; i++ {
+		var err error
+		var pk *sign.PublicKey
+
 		fn := args[i]
-		pk, err := sign.ReadPublicKey(fn)
-		if err != nil {
-			die("%s", err)
+		if strings.Index(fn, "@") > 0 {
+			var ok bool
+			pk, ok = keymap[fn]
+			if !ok {
+				warn("can't find user %s in %s", fn, authkeys)
+				errs += 1
+				continue
+			}
+		} else {
+			pk, err = sign.ReadPublicKey(fn)
+			if err != nil {
+				warn("%s", err)
+				errs += 1
+				continue
+			}
 		}
 
 		err = en.AddRecipient(pk)
 		if err != nil {
 			die("%s", err)
 		}
+	}
+
+	if errs > 0 {
+		die("Too many errors!")
 	}
 
 	err = en.Encrypt(infd, outfd)
@@ -149,10 +196,10 @@ func decrypt(args []string) {
 	var envpw string
 	var outfile string
 	var pubkey string
-	var pw bool
+	var nopw bool
 
 	fs.StringVarP(&outfile, "outfile", "o", "", "Write the output to file `F`")
-	fs.BoolVarP(&pw, "password", "p", false, "Ask for passphrase to decrypt the private key")
+	fs.BoolVarP(&nopw, "no-password", "", false, "Don't ask for passphrase to decrypt the private key")
 	fs.StringVarP(&envpw, "env-password", "", "", "Use passphrase from environment variable `E`")
 	fs.StringVarP(&pubkey, "verify-sender", "v", "", "Verify that the sender matches public key in `F`")
 
@@ -163,25 +210,31 @@ func decrypt(args []string) {
 
 	args = fs.Args()
 	if len(args) < 1 {
-		die("Insufficient args. Try '%s --help'")
+		die("Insufficient args. Try '%s --help'", os.Args[0])
 	}
 
 	var infd io.Reader = os.Stdin
 	var outfd io.Writer = os.Stdout
 	var inf *os.File
-	var pws, infile string
-
-	if len(envpw) > 0 {
-		pws = os.Getenv(envpw)
-	} else if pw {
-		pws, err = utils.Askpass("Enter passphrase for private key", false)
-		if err != nil {
-			die("%s", err)
-		}
-	}
+	var infile string
 
 	keyfile := args[0]
-	sk, err := sign.ReadPrivateKey(keyfile, pws)
+	sk, err := sign.ReadPrivateKey(keyfile, func() ([]byte, error) {
+		var pws string
+		if nopw {
+			return nil, nil
+		}
+
+		if len(envpw) > 0 {
+			pws = os.Getenv(envpw)
+		} else {
+			pws, err = utils.Askpass("Enter passphrase for private key", false)
+			if err != nil {
+				die("%s", err)
+			}
+		}
+		return []byte(pws), nil
+	})
 	if err != nil {
 		die("%s", err)
 	}
