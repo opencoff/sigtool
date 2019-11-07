@@ -64,6 +64,18 @@ func tempdir(t *testing.T) string {
 	return tmp
 }
 
+// return a hardcoded password
+func hardcodedPw() ([]byte, error) {
+	return []byte("abc"), nil
+}
+
+func wrongPw() ([]byte, error) {
+	return []byte("xyz"), nil
+}
+func emptyPw() ([]byte,  error) {
+	return nil, nil
+}
+
 // Return true if file exists, false otherwise
 func fileExists(fn string) bool {
 	st, err := os.Stat(fn)
@@ -100,7 +112,7 @@ func Test0(t *testing.T) {
 	dn := tempdir(t)
 	bn := fmt.Sprintf("%s/t0", dn)
 
-	err = kp.Serialize(bn, "", "abc")
+	err = kp.Serialize(bn, "", hardcodedPw)
 	assert(err == nil, "keyPair.Serialize() fail")
 
 	pkf := fmt.Sprintf("%s.pub", bn)
@@ -110,32 +122,28 @@ func Test0(t *testing.T) {
 	assert(fileExists(pkf), "missing pkf")
 	assert(fileExists(skf), "missing skf")
 
-	// send wrong file and see what happens
-	pk, err := ReadPublicKey(skf)
-	assert(err != nil, "bad PK ReadPK fail")
-
-	pk, err = ReadPublicKey(pkf)
+	pk, err := ReadPublicKey(pkf)
 	assert(err == nil, "ReadPK() fail")
 
 	// -ditto- for Sk
-	sk, err := ReadPrivateKey(pkf, "")
-	assert(err != nil, "bad SK ReadSK fail")
+	sk, err := ReadPrivateKey(pkf, emptyPw)
+	assert(err != nil, "bad SK ReadSK fail: %s", err)
 
-	sk, err = ReadPrivateKey(skf, "")
-	assert(err != nil, "ReadSK() empty pw fail")
+	sk, err = ReadPrivateKey(skf, emptyPw)
+	assert(err != nil, "ReadSK() empty pw fail:  ks", err)
 
-	sk, err = ReadPrivateKey(skf, "abcdef")
-	assert(err != nil, "ReadSK() wrong pw fail")
+	sk, err = ReadPrivateKey(skf, wrongPw)
+	assert(err != nil, "ReadSK() wrong pw fail: %s", err)
 
 	badf := fmt.Sprintf("%s/badf.key", dn)
 	err = ioutil.WriteFile(badf, []byte(badsk), 0600)
 	assert(err == nil, "write badsk")
 
-	sk, err = ReadPrivateKey(badf, "abc")
-	assert(err != nil, "badsk read fail")
+	sk, err = ReadPrivateKey(badf, hardcodedPw)
+	assert(err != nil, "badsk read fail: %s", err)
 
 	// Finally, with correct password it should work.
-	sk, err = ReadPrivateKey(skf, "abc")
+	sk, err = ReadPrivateKey(skf, hardcodedPw)
 	assert(err == nil, "ReadSK() correct pw fail")
 
 	// And, deserialized keys should be identical
@@ -186,11 +194,11 @@ func Test1(t *testing.T) {
 	pkf := fmt.Sprintf("%s.pub", bn)
 	skf := fmt.Sprintf("%s.key", bn)
 
-	err = kp.Serialize(bn, "", "")
+	err = kp.Serialize(bn, "", emptyPw)
 	assert(err == nil, "keyPair.Serialize() fail")
 
 	// Now read the private key and sign
-	sk, err = ReadPrivateKey(skf, "")
+	sk, err = ReadPrivateKey(skf, emptyPw)
 	assert(err == nil, "readSK fail")
 
 	pk, err = ReadPublicKey(pkf)
@@ -262,6 +270,11 @@ func Benchmark_Sig(b *testing.B) {
 		16,
 		32,
 		64,
+		1024,
+		4096,
+		256*1024,
+		1048576,
+		4 * 1048576,
 	}
 
 	b.StopTimer()

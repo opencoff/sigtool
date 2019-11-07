@@ -30,8 +30,9 @@ import (
 )
 
 // Encryption chunk size = 4MB
-const chunkSize int = 4 * 1048576
-const maxChunkSize int = 16 * 1048576
+const chunkSize uint32 = 4 * 1048576
+const maxChunkSize uint32 = 16 * 1048576
+const EOF uint32 = 1 << 31
 
 const _Magic = "SigTool"
 const _MagicLen = len(_Magic)
@@ -58,13 +59,14 @@ func NewEncryptor(sk *PrivateKey, blksize uint64) (*Encryptor, error) {
 		return nil, fmt.Errorf("encrypt: Blocksize is too large (max 16M)")
 	}
 
-	if blksize == 0 {
-		blksize = uint64(chunkSize)
+	blksz := uint32(blksize)
+	if blksz == 0 {
+		blksz = chunkSize
 	}
 
 	e := &Encryptor{
 		Header: Header{
-			ChunkSize: uint32(blksize),
+			ChunkSize: blksz,
 			Salt:      make([]byte, _AEADNonceLen),
 		},
 
@@ -84,7 +86,7 @@ func NewEncryptor(sk *PrivateKey, blksize uint64) (*Encryptor, error) {
 		return nil, fmt.Errorf("encrypt: %s", err)
 	}
 
-	e.buf = make([]byte, chunkSize+4+e.ae.Overhead())
+	e.buf = make([]byte, blksz+4+uint32(e.ae.Overhead()))
 	return e, nil
 }
 
@@ -176,15 +178,14 @@ func (e *Encryptor) Encrypt(rd io.Reader, wr io.Writer) error {
 	}
 
 	buf := make([]byte, e.ChunkSize)
-	i := 0
 
-	for {
+	var i uint32
+	var eof bool
+	for !eof {
 		n, err := io.ReadAtLeast(rd, buf, int(e.ChunkSize))
-		if n == 0 {
-			return nil
-		}
-		if n > 0 {
-			err = e.encrypt(buf[:n], wr, i)
+		eof = err == io.EOF || err == io.ErrClosedPipe
+		if n >= 0 {
+			err = e.encrypt(buf[:n], wr, i, eof)
 			if err != nil {
 				return err
 			}
@@ -193,10 +194,11 @@ func (e *Encryptor) Encrypt(rd io.Reader, wr io.Writer) error {
 			continue
 		}
 
-		if err != nil && err != io.EOF {
+		if err != nil && err != io.EOF && err != io.ErrClosedPipe {
 			return fmt.Errorf("encrypt: I/O read error: %s", err)
 		}
 	}
+	return nil
 }
 
 // encrypt exactly _one_ block of data
@@ -204,12 +206,18 @@ func (e *Encryptor) Encrypt(rd io.Reader, wr io.Writer) error {
 // This protects the output stream from re-ordering attacks and length
 // modification attacks. The encoded length & block number is used as
 // additional data in the AEAD construction.
-func (e *Encryptor) encrypt(buf []byte, wr io.Writer, i int) error {
+func (e *Encryptor) encrypt(buf []byte, wr io.Writer, i uint32, eof bool) error {
 	var b [8]byte
 	var noncebuf [32]byte
+	var z uint32 = uint32(e.ae.Overhead() + len(buf))
 
-	binary.BigEndian.PutUint32(b[:4], uint32(e.ae.Overhead()+len(buf)))
-	binary.BigEndian.PutUint32(b[4:], uint32(i))
+	// mark last block
+	if eof {
+		z |= EOF
+	}
+
+	binary.BigEndian.PutUint32(b[:4], z)
+	binary.BigEndian.PutUint32(b[4:], i)
 
 	h := sha256.New()
 	h.Write(e.Salt)
@@ -248,7 +256,7 @@ func NewDecryptor(rd io.Reader) (*Decryptor, error) {
 
 	_, err := io.ReadFull(rd, b[:])
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("decrypt: err while reading header: %s", err)
 	}
 
 	if bytes.Compare(b[:_MagicLen], []byte(_Magic)) != 0 {
@@ -271,7 +279,7 @@ func NewDecryptor(rd io.Reader) (*Decryptor, error) {
 
 	_, err = io.ReadFull(rd, hdr)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("decrypt: err while reading header: %s", err)
 	}
 
 	verify := hdr[:32]
@@ -291,7 +299,7 @@ func NewDecryptor(rd io.Reader) (*Decryptor, error) {
 		return nil, fmt.Errorf("decrypt: decode error: %s", err)
 	}
 
-	if d.ChunkSize == 0 || d.ChunkSize >= uint32(maxChunkSize) {
+	if d.ChunkSize == 0 || d.ChunkSize >= maxChunkSize {
 		return nil, fmt.Errorf("decrypt: invalid chunkSize %d", d.ChunkSize)
 	}
 
@@ -370,12 +378,13 @@ func (d *Decryptor) Decrypt(wr io.Writer) error {
 		return fmt.Errorf("decrypt: wrapped-key not decrypted (missing SetPrivateKey()?")
 	}
 
-	for i := 0; ; i++ {
-		c, err := d.decrypt(i)
+	var i uint32
+	for i = 0; ; i++ {
+		c, eof, err := d.decrypt(i)
 		if err != nil {
 			return err
 		}
-		if len(c) == 0 {
+		if eof || len(c) == 0 {
 			return nil
 		}
 
@@ -390,46 +399,53 @@ func (d *Decryptor) Decrypt(wr io.Writer) error {
 }
 
 // Decrypt exactly one chunk of data
-func (d *Decryptor) decrypt(i int) ([]byte, error) {
+func (d *Decryptor) decrypt(i uint32) ([]byte, bool, error) {
 	var b [8]byte
 	var nonceb [32]byte
 
 	n, err := io.ReadFull(d.rd, b[:4])
-	if n == 0 || err == io.EOF {
-		return nil, nil
+	if err == io.EOF || err == io.ErrClosedPipe || n == 0 {
+		return nil, false, fmt.Errorf("decrypt: premature EOF-1 while reading block %d", i)
 	}
 
 	if err != nil {
-		return nil, fmt.Errorf("decrypt: can't read chunk %d length: %s", i, err)
+		return nil, false, fmt.Errorf("decrypt: can't read chunk %d length: %s", i, err)
 	}
 
-	chunklen := int(binary.BigEndian.Uint32(b[:4]))
+	m := binary.BigEndian.Uint32(b[:4])
+	eof := (m & EOF) > 0
+
+	m &= (EOF-1)
 
 	// Sanity check - in case of corrupt header
-	if chunklen > (d.ae.Overhead() + chunkSize) {
-		return nil, fmt.Errorf("decrypt: chunksize is too large (%d)", chunklen)
+	if m > (uint32(d.ae.Overhead()) + chunkSize) {
+		return nil, false, fmt.Errorf("decrypt: chunksize is too large (%d)", m)
 	}
 
-	binary.BigEndian.PutUint32(b[4:], uint32(i))
+	binary.BigEndian.PutUint32(b[4:], i)
 	h := sha256.New()
 	h.Write(d.Salt)
 	h.Write(b[:])
 	nonce := h.Sum(nonceb[:0])
 
-	n, err = io.ReadFull(d.rd, d.buf[:chunklen])
-	if n == 0 || err == io.EOF {
-		return nil, nil
-	}
-	if err != nil {
-		return nil, fmt.Errorf("decrypt: can't read chunk %d: %s", i, err)
+	var p []byte
+	if m > 0 {
+		n, err = io.ReadFull(d.rd, d.buf[:m])
+		if err != nil {
+			return nil, false, fmt.Errorf("decrypt: premature EOF-2 while reading block %d: %s", i, err)
+		}
+
+		p, err = d.ae.Open(d.buf[:0], nonce, d.buf[:n], b[:])
+		if err != nil {
+			return nil, false, fmt.Errorf("decrypt: can't decrypt chunk %d: %s", i, err)
+		}
 	}
 
-	p, err := d.ae.Open(d.buf[:0], nonce, d.buf[:chunklen], b[:])
-	if err != nil {
-		return nil, fmt.Errorf("decrypt: can't decrypt chunk %d: %s", i, err)
+	if eof && len(p) != 0 {
+		return nil, false, fmt.Errorf("decrypt: EOF set on blk %d of len %d", i, m)
 	}
 
-	return p, nil
+	return p, eof, nil
 }
 
 // Wrap a shared key with the recipient's public key 'pk' by generating an ephemeral
