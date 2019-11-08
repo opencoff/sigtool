@@ -186,6 +186,18 @@ func encrypt(args []string) {
 	}
 }
 
+type nullWriter struct{}
+
+func (w *nullWriter) Write(p []byte) (int, error) {
+	return len(p), nil
+}
+
+func (w *nullWriter) Close() error {
+	return nil
+}
+
+var _ io.WriteCloser = &nullWriter{}
+
 // sigtool decrypt a.key [file] [-o output]
 func decrypt(args []string) {
 	fs := flag.NewFlagSet("decrypt", flag.ExitOnError)
@@ -196,12 +208,13 @@ func decrypt(args []string) {
 	var envpw string
 	var outfile string
 	var pubkey string
-	var nopw bool
+	var nopw, test bool
 
 	fs.StringVarP(&outfile, "outfile", "o", "", "Write the output to file `F`")
 	fs.BoolVarP(&nopw, "no-password", "", false, "Don't ask for passphrase to decrypt the private key")
 	fs.StringVarP(&envpw, "env-password", "", "", "Use passphrase from environment variable `E`")
 	fs.StringVarP(&pubkey, "verify-sender", "v", "", "Verify that the sender matches public key in `F`")
+	fs.BoolVarP(&test, "test", "t", false, "Test the encrypted file against the given key without writing to output")
 
 	err := fs.Parse(args)
 	if err != nil {
@@ -257,8 +270,10 @@ func decrypt(args []string) {
 			infd = inf
 		}
 	}
-
-	if len(outfile) > 0 && outfile != "-" {
+ 
+	if test {
+		outfd = &nullWriter{}
+	} else if len(outfile) > 0 && outfile != "-" {
 		if inf != nil {
 			ost, err := os.Stat(outfile)
 			if err != nil {
@@ -292,6 +307,10 @@ func decrypt(args []string) {
 	err = d.Decrypt(outfd)
 	if err != nil {
 		die("%s", err)
+	}
+
+	if test {
+		warn("Enc file OK")
 	}
 }
 
