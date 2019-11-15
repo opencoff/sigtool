@@ -37,26 +37,20 @@ func encrypt(args []string) {
 	var keyfile string
 	var envpw string
 	var nopw bool
-	var sblksize string
+	var blksize uint64
 
 	fs.StringVarP(&outfile, "outfile", "o", "", "Write the output to file `F`")
 	fs.StringVarP(&keyfile, "sign", "s", "", "Sign using private key `S`")
 	fs.BoolVarP(&nopw, "no-password", "", false, "Don't ask for passphrase to decrypt the private key")
 	fs.StringVarP(&envpw, "env-password", "", "", "Use passphrase from environment variable `E`")
-	fs.StringVarP(&sblksize, "block-size", "B", "4M", "Use `S` as the encryption block size")
+	fs.SizeVarP(&blksize, "block-size", "B", 128 * 1024, "Use `S` as the encryption block size")
 
 	err := fs.Parse(args)
 	if err != nil {
 		die("%s", err)
 	}
 
-	blksize, err := utils.ParseSize(sblksize)
-	if err != nil {
-		die("%s", err)
-	}
-
 	var pws, infile string
-
 	var sk *sign.PrivateKey
 
 	if len(keyfile) > 0 {
