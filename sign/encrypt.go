@@ -10,6 +10,24 @@
 // This software does not come with any express or implied
 // warranty; it is provided "as is". No claim  is made to its
 // suitability for any purpose.
+//
+// Notes
+// =====
+// Header: Fixed size + Variable list of recipients
+// Fixed size header:
+//    - Magic: 7 bytes
+//    - Version: 1 byte
+//    - VLen:    4 byte
+//
+// Variable Length Segment:
+//    - Shasum:  32 bytes (SHA256 of full header)
+//    - Protobuf encoded recipient info
+//
+// The variable length segment consists of one or more
+// recipients, their wrapped keys etc. This is encoded as
+// a protobuf message. This protobuf encoded message immediately
+// follows the fixed length header.
+//
 
 package sign
 
@@ -37,6 +55,7 @@ const EOF uint32 = 1 << 31
 const _Magic = "SigTool"
 const _MagicLen = len(_Magic)
 const _AEADNonceLen = 32
+const _FixedHdrLen = _MagicLen + 1 + 4
 
 // Encryptor holds the encryption context
 type Encryptor struct {
@@ -114,36 +133,35 @@ func (e *Encryptor) AddRecipient(pk *PublicKey) error {
 
 // Begin the encryption process by writing the header
 func (e *Encryptor) start(wr io.Writer) error {
-	msize := e.Size()
+	 varHdrLen := sha256.Size + e.Size()
 
-	// marshal the header and recipients
-	hdrlen := _MagicLen + 1 + 4 + sha256.Size
+	 hdrBuf := make([]byte, _FixedHdrLen + varHdrLen)
 
-	buf := make([]byte, hdrlen+msize)
-	hdrbuf := buf[hdrlen:]
+	 fixedHdr := hdrBuf[:_FixedHdrLen]
+	 varHdr := hdrBuf[_FixedHdrLen:]
 
-	copy(buf[:], []byte(_Magic))
+	 cksum := varHdr[:sha256.Size]
+	 pbHdr := varHdr[sha256.Size:]
 
-	buf[_MagicLen] = 1 // file version#
-
-	// The fixed header is the magic _and _ the length of the variable segment.
-	// So, we capture the length of the variable portion first.
-	binary.BigEndian.PutUint32(buf[_MagicLen+1:], uint32(sha256.Size+msize))
+	 // Now assemble the fixed header
+	 copy(fixedHdr[:], []byte(_Magic))
+	 fixedHdr[_MagicLen] = 1 // version #
+	 binary.BigEndian.PutUint32(fixedHdr[_MagicLen+1:], uint32(varHdrLen))
 
 	// Now marshal the variable portion
-	_, err := e.MarshalToSizedBuffer(hdrbuf)
+	_, err := e.MarshalToSizedBuffer(pbHdr)
 	if err != nil {
 		return fmt.Errorf("encrypt: can't marshal header: %s", err)
 	}
 
-	// and calculate the header checksum
-	cksum := buf[_MagicLen+1+4:]
+	// Now calculate checksum of everything
 	h := sha256.New()
-	h.Write(hdrbuf)
+	h.Write(fixedHdr)
+	h.Write(pbHdr)
 	h.Sum(cksum[:0])
 
 	// Finally write it out
-	err = fullwrite(buf, wr)
+	err = fullwrite(hdrBuf, wr)
 	if err != nil {
 		return fmt.Errorf("encrypt: %s", err)
 	}
@@ -252,7 +270,7 @@ type Decryptor struct {
 // Create a new decryption context and if 'pk' is given, check that it matches
 // the sender
 func NewDecryptor(rd io.Reader) (*Decryptor, error) {
-	var b [12]byte
+	var b [_FixedHdrLen]byte
 
 	_, err := io.ReadFull(rd, b[:])
 	if err != nil {
@@ -268,8 +286,10 @@ func NewDecryptor(rd io.Reader) (*Decryptor, error) {
 	}
 
 	hdrlen := binary.BigEndian.Uint32(b[_MagicLen+1:])
-	if hdrlen > 65536 {
-		return nil, fmt.Errorf("decrypt: header too large (max 65536)")
+
+	// sanity check on variable segment length
+	if hdrlen > 1048576 {
+		return nil, fmt.Errorf("decrypt: header too large (max 1048576)")
 	}
 	if hdrlen < 32 {
 		return nil, fmt.Errorf("decrypt: header too small (min 32)")
@@ -282,10 +302,14 @@ func NewDecryptor(rd io.Reader) (*Decryptor, error) {
 		return nil, fmt.Errorf("decrypt: err while reading header: %s", err)
 	}
 
-	verify := hdr[:32]
-	hdr = hdr[32:]
+	verify := hdr[:sha256.Size]
+	pbHdr := hdr[sha256.Size:]
 
-	cksum := sha256.Sum256(hdr)
+	h := sha256.New()
+	h.Write(b[:])
+	h.Write(pbHdr)
+	cksum := h.Sum(nil)
+
 	if subtle.ConstantTimeCompare(verify, cksum[:]) == 0 {
 		return nil, fmt.Errorf("decrypt: header corrupted")
 	}
@@ -294,7 +318,7 @@ func NewDecryptor(rd io.Reader) (*Decryptor, error) {
 		rd: rd,
 	}
 
-	err = d.Header.Unmarshal(hdr)
+	err = d.Header.Unmarshal(pbHdr)
 	if err != nil {
 		return nil, fmt.Errorf("decrypt: decode error: %s", err)
 	}
