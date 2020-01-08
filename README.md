@@ -139,16 +139,8 @@ recipient can decrypt using their private key.
 ## Technical Details
 
 ### How is the private key protected?
-The Ed25519 private key is encrypted using a key derived from the
-user supplied pass phrase. This pass phrase is used to derive an
-encryption key using the Scrypt key derivation algorithm. The
-resulting derived key is XOR'd with the Ed25519 private key before
-being committed to disk. To protect the integrity of the process,
-the essential parameters used for deriving the key, and the derived
-key are hashed via SHA256 and stored along with the encrypted key.
-
-As an additional security measure, the user supplied pass phrase is
-hashed with SHA512.
+The Ed25519 private key is encrypted in AES-GCM-256 mode using a key
+derived from the user's pass phrase.
 
 ### How is the Encryption done?
 The file encryption uses AES-GCM-256 in AEAD mode. The encryption uses
@@ -158,7 +150,7 @@ is 4MB (4 * 1048576 bytes). Each chunk generates its own nonce
 from a global salt. The nonce is calculated as a SHA256 hash of
 the salt, the chunk length and the block number.
 
-### What is the public-key cryptography used?
+### What is the public-key cryptography?
 `sigtool` uses Curve25519 ECC to generate shared secrets between
 pairs of sender & recipients. This pairwise shared secret is expanded
 using HKDF to generate a key-encryption-key. The file-encryption key
@@ -170,14 +162,20 @@ corresponding Curve25519 points in order to generate the shared secret.
 This elliptic co-ordinate transform follows [FiloSottile's writeup][2].
 
 ### Format of the Encrypted File
-Every encrypted file starts with a header:
+Every encrypted file starts with a header and the header-checksum:
+
+* Fixed-size header
+* Variable-length header
+* SHA256 sum of both of the above
+
+The fixed length header is:
 
     7 byte magic ("SigTool")
     1 byte version number
     4 byte header length (big endian encoding)
-    32 byte SHA256 of the encryption-header
 
-The encryption-header is described as a protobuf file (sign/hdr.proto):
+The variable length header has the per-recipient wrapped keys. This is
+described as a protobuf file (sign/hdr.proto):
 
 ```protobuf
     message header {
@@ -193,6 +191,8 @@ The encryption-header is described as a protobuf file (sign/hdr.proto):
         bytes key = 4;      // AEAD encrypted key
     }
 ```
+
+The SHA256 sum covers the fixed-length and variable-length headers.
 
 The encrypted data immediately follows the headers above. Each encrypted
 chunk is encoded the same way:
@@ -239,35 +239,29 @@ And, a serialized Ed25519 private key looks like so:
     esk: t3vfqHbgUiA733KKPymFjWT8DdnBEkiMfsDHolPUdQWpvVn/F1Z4J6KYV3M5rGO9xgKxh5RAmqt+6LKgOiJAMQ==
     salt: pPHKG55UJYtJ5wU0G9hBvNQJ0DvT0a7T4Fmj4aPB84s=
     algo: scrypt-sha256
-    verify: JvjRjJMKhJhBmZngC3Pvq7x3KCLKt7gar1AAz7HB4qM=
     Z: 131072
     r: 16
     p: 1
 ```
 
-The Ed25519 private key is encrypted using Scrypt password hashing
-mechanism. A user supplied passphrase to protect the private key
-is first pre-hashed using SHA-512 before being used in
-```scrypt()```. In pseudo code, this operation looks like below:
+The Ed25519 private key is encrypted using AES-256-GCM AEAD mode;
+the encryption key is derived from the user supplied passphrase
+using scrypt KDF.  A user supplied passphrase is first expanded
+using SHA-512 before being used in ```scrypt()```. In pseudo code,
+this operation looks like below:
 
     passphrase = get_user_passphrase()
     hpass      = SHA512(passphrase)
     salt       = randombytes(32)
-    xorkey     = Scrypt(hpass, salt, N, r, p)
-    verify     = SHA256(salt, xorkey)
-    esk        = ed25519_private_key ^ xorkey
+    key        = Scrypt(hpass, salt, N, r, p)
+    esk        = AES256_GCM(ed25519_private_key, key)
 
 Where, ```N```, ```r```, ```p``` are Scrypt parameters. In our
 implementation:
 
-    N = 131072
-    r = 16
+    N = 2^19 (1 << 19)
+    r = 8
     p = 1
-
-```verify```  is used during the decryption of the Ed25519 private
-key - *before* actually doing the "xor" operation. This check
-ensures that the supplied passphrase yields the same value as
-```verify```.
 
 ### Ed25519 Signature
 A generated signature looks like below after serialization:

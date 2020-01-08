@@ -23,7 +23,7 @@ import (
 )
 
 // one sender, one receiver no verification of sender
-func TestSimple(t *testing.T) {
+func TestEncryptSimple(t *testing.T) {
 	assert := newAsserter(t)
 
 	receiver, err := NewKeypair()
@@ -66,7 +66,7 @@ func TestSimple(t *testing.T) {
 }
 
 // test corrupted header or corrupted input
-func TestCorrupted(t *testing.T) {
+func TestEncryptCorrupted(t *testing.T) {
 	assert := newAsserter(t)
 
 	receiver, err := NewKeypair()
@@ -105,7 +105,7 @@ func TestCorrupted(t *testing.T) {
 }
 
 // one sender, one receiver with verification of sender
-func TestSenderVerified(t *testing.T) {
+func TestEncryptSenderVerified(t *testing.T) {
 	assert := newAsserter(t)
 
 	sender, err := NewKeypair()
@@ -151,7 +151,7 @@ func TestSenderVerified(t *testing.T) {
 }
 
 // one sender, multiple receivers, each decrypting the blob
-func TestMultiReceiver(t *testing.T) {
+func TestEncryptMultiReceiver(t *testing.T) {
 	assert := newAsserter(t)
 
 	sender, err := NewKeypair()

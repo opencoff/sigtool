@@ -14,38 +14,12 @@
 package sign
 
 import (
-	"crypto/subtle"
 	"fmt"
 	"io/ioutil"
 	"os"
 	"path"
-	"runtime"
 	"testing"
-	// module under test
-	//"github.com/sign"
 )
-
-func newAsserter(t *testing.T) func(cond bool, msg string, args ...interface{}) {
-	return func(cond bool, msg string, args ...interface{}) {
-		if cond {
-			return
-		}
-
-		_, file, line, ok := runtime.Caller(1)
-		if !ok {
-			file = "???"
-			line = 0
-		}
-
-		s := fmt.Sprintf(msg, args...)
-		t.Fatalf("%s: %d: Assertion failed: %s\n", file, line, s)
-	}
-}
-
-// Return true if two byte arrays are equal
-func byteEq(x, y []byte) bool {
-	return subtle.ConstantTimeCompare(x, y) == 1
-}
 
 // Return a temp dir in a temp-dir
 func tempdir(t *testing.T) string {
@@ -72,7 +46,7 @@ func hardcodedPw() ([]byte, error) {
 func wrongPw() ([]byte, error) {
 	return []byte("xyz"), nil
 }
-func emptyPw() ([]byte,  error) {
+func emptyPw() ([]byte, error) {
 	return nil, nil
 }
 
@@ -103,7 +77,7 @@ p: 1
 `
 
 // #1. Create new key pair, and read them back.
-func Test0(t *testing.T) {
+func TestSignSimple(t *testing.T) {
 	assert := newAsserter(t)
 
 	kp, err := NewKeypair()
@@ -154,7 +128,7 @@ func Test0(t *testing.T) {
 }
 
 // #2. Create new key pair, sign a rand buffer and verify
-func Test1(t *testing.T) {
+func TestSignRandBuf(t *testing.T) {
 	assert := newAsserter(t)
 	kp, err := NewKeypair()
 	assert(err == nil, "NewKeyPair() fail")
@@ -272,7 +246,7 @@ func Benchmark_Sig(b *testing.B) {
 		64,
 		1024,
 		4096,
-		256*1024,
+		256 * 1024,
 		1048576,
 		4 * 1048576,
 	}

@@ -22,6 +22,8 @@ package sign
 import (
 	"bytes"
 	"crypto"
+	"crypto/aes"
+	"crypto/cipher"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/sha512"
@@ -77,50 +79,38 @@ type Signature struct {
 	pkhash []byte // [0:16] SHA256 hash of public key needed for verification
 }
 
-// Algorithm used in the encrypted private key
-const sk_algo = "scrypt-sha256"
-const sig_algo = "sha512-ed25519"
-
 // Length of Ed25519 Public Key Hash
 const PKHashLength = 16
 
-// Scrypt parameters
-const _N = 1 << 17
-const _r = 16
-const _p = 1
+const (
+	// Scrypt parameters
+	_N int = 1 << 19
+	_r int = 8
+	_p int = 1
+
+	// Algorithm used in the encrypted private key
+	sk_algo  = "scrypt-sha256"
+	sig_algo = "sha512-ed25519"
+)
 
 // Encrypted Private key
-type encPrivKey struct {
-	// Encrypted Sk
-	Esk []byte
+type serializedPrivKey struct {
+	Comment string `yaml:"comment,omitempty"`
 
-	// parameters for Sk serialization
-	Salt []byte
+	// Encrypted Sk
+	Esk  string `yaml:"esk"`
+	Salt string `yaml:"salt,omitempty"`
 
 	// Algorithm used for checksum and KDF
-	Algo string
-
-	// Checksum to verify passphrase before we xor it
-	Verify []byte
+	Algo string `yaml:"algo,omitempty"`
 
 	// These are params for scrypt.Key()
 	// CPU Cost parameter; must be a power of 2
-	N uint32
-	// r * p should be less than 2^30
-	r uint32
-	p uint32
-}
+	N int `yaml:"Z,flow,omitempty"`
 
-// Serialized representation of private key
-type serializedPrivKey struct {
-	Comment string `yaml:"comment,omitempty"`
-	Esk     string `yaml:"esk"`
-	Salt    string `yaml:"salt,omitempty"`
-	Algo    string `yaml:"algo,omitempty"`
-	Verify  string `yaml:"verify,omitempty"`
-	N       uint32 `yaml:"Z,flow,omitempty"`
-	R       uint32 `yaml:"r,flow,omitempty"`
-	P       uint32 `yaml:"p,flow,omitempty"`
+	// r * p should be less than 2^30
+	R int `yaml:"r,flow,omitempty"`
+	P int `yaml:"p,flow,omitempty"`
 }
 
 // serialized representation of public key
@@ -213,48 +203,43 @@ func MakePrivateKey(yml []byte, pw []byte) (*PrivateKey, error) {
 
 	err := yaml.Unmarshal(yml, &ssk)
 	if err != nil {
-		return nil, fmt.Errorf("can't parse YAML: %s", err)
+		return nil, fmt.Errorf("make priv key: can't parse YAML: %s", err)
 	}
 
-	esk := &encPrivKey{N: ssk.N, r: ssk.R, p: ssk.P, Algo: ssk.Algo}
 	b64 := base64.StdEncoding.DecodeString
 
-	esk.Esk, err = b64(ssk.Esk)
+	salt, err := b64(ssk.Salt)
 	if err != nil {
-		return nil, fmt.Errorf("can't decode YAML:Esk: %s", err)
+		return nil, fmt.Errorf("make priv key: can't decode salt: %s", err)
 	}
 
-	esk.Salt, err = b64(ssk.Salt)
+	esk, err := b64(ssk.Esk)
 	if err != nil {
-		return nil, fmt.Errorf("can't decode YAML:Salt: %s", err)
-	}
-
-	esk.Verify, err = b64(ssk.Verify)
-	if err != nil {
-		return nil, fmt.Errorf("can't decode YAML:Verify: %s", err)
+		return nil, fmt.Errorf("make priv key: can't decode key: %s", err)
 	}
 
 	// We take short passwords and extend them
 	pwb := sha512.Sum512(pw)
 
-	xork, err := scrypt.Key(pwb[:], esk.Salt, int(esk.N), int(esk.r), int(esk.p), len(esk.Esk))
+	// "32" == Length of AES-256 key
+	key, err := scrypt.Key(pwb[:], salt, ssk.N, ssk.R, ssk.P, 32)
 	if err != nil {
-		return nil, fmt.Errorf("can't derive key: %s", err)
+		return nil, fmt.Errorf("make priv key: can't derive key: %s", err)
 	}
 
-	hh := sha256.New()
-	hh.Write(esk.Salt)
-	hh.Write(xork)
-	ck := hh.Sum(nil)
-
-	if subtle.ConstantTimeCompare(esk.Verify, ck) != 1 {
-		return nil, fmt.Errorf("incorrect private key password")
+	aes, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, fmt.Errorf("make priv key: aes failure: %s", err)
 	}
 
-	// Everything works. Now, decode the key
-	skb := make([]byte, len(esk.Esk))
-	for i := 0; i < len(esk.Esk); i++ {
-		skb[i] = esk.Esk[i] ^ xork[i]
+	ae, err := cipher.NewGCM(aes)
+	if err != nil {
+		return nil, fmt.Errorf("make priv key: aes failure: %s", err)
+	}
+
+	skb, err := ae.Open(nil, salt[:ae.NonceSize()], esk, nil)
+	if err != nil {
+		return nil, fmt.Errorf("make priv key: wrong password")
 	}
 
 	return PrivateKeyFromBytes(skb)
@@ -295,60 +280,58 @@ func (pk *PublicKey) Hash() []byte {
 }
 
 // Serialize the private key to a file
+// AEAD encryption for protecting the private key
 // Format: YAML
 // All []byte are in base64 (RawEncoding)
 func (sk *PrivateKey) serialize(fn, comment string, getpw func() ([]byte, error)) error {
-
 	pw, err := getpw()
 	if err != nil {
 		return err
 	}
 
-	b64 := base64.StdEncoding.EncodeToString
-	esk := &encPrivKey{}
-	ssk := &serializedPrivKey{Comment: comment}
-
 	// expand the password into 64 bytes
-	pwb := sha512.Sum512(pw)
+	pass := sha512.Sum512(pw)
+	salt := make([]byte, 32)
 
-	esk.N = _N
-	esk.r = _r
-	esk.p = _p
+	randread(salt)
 
-	esk.Salt = make([]byte, 32)
-	esk.Esk = make([]byte, len(sk.Sk))
-
-	randread(esk.Salt)
-	xork, err := scrypt.Key(pwb[:], esk.Salt, int(esk.N), int(esk.r), int(esk.p), len(sk.Sk))
+	// "32" == Length of AES-256 key
+	key, err := scrypt.Key(pass[:], salt, _N, _r, _p, 32)
 	if err != nil {
-		return fmt.Errorf("Can't derive scrypt key: %s", err)
+		return fmt.Errorf("marshal: can't derive scrypt key: %s", err)
 	}
 
-	hh := sha256.New()
-	hh.Write(esk.Salt)
-	hh.Write(xork)
-	esk.Verify = hh.Sum(nil)
+	aes, err := aes.NewCipher(key)
+	if err != nil {
+		return fmt.Errorf("marshal: %s", err)
+	}
+
+	ae, err := cipher.NewGCM(aes)
+	if err != nil {
+		return fmt.Errorf("marshal: %s", err)
+	}
+
+	tl := ae.Overhead()
+	buf := make([]byte, tl+len(sk.Sk))
+	esk := ae.Seal(buf[:0], salt[:ae.NonceSize()], sk.Sk, nil)
+
+	enc := base64.StdEncoding.EncodeToString
+
+	ssk := serializedPrivKey{
+		Comment: comment,
+		Esk:     enc(esk),
+		Salt:    enc(salt),
+		Algo:    sk_algo,
+		N:       _N,
+		R:       _r,
+		P:       _p,
+	}
 
 	// We won't protect the Scrypt parameters with the hash above
 	// because it is not needed. If the parameters are wrong, the
 	// derived key will be wrong and thus, the hash will not match.
 
-	esk.Algo = sk_algo // global var
-
-	// Finally setup the encrypted key
-	for i := 0; i < len(sk.Sk); i++ {
-		esk.Esk[i] = sk.Sk[i] ^ xork[i]
-	}
-
-	ssk.Esk = b64(esk.Esk)
-	ssk.Salt = b64(esk.Salt)
-	ssk.Verify = b64(esk.Verify)
-	ssk.Algo = esk.Algo
-	ssk.N = esk.N
-	ssk.R = esk.r
-	ssk.P = esk.p
-
-	out, err := yaml.Marshal(ssk)
+	out, err := yaml.Marshal(&ssk)
 	if err != nil {
 		return fmt.Errorf("can't marahal to YAML: %s", err)
 	}

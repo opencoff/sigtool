@@ -13,15 +13,19 @@
 //
 // Notes
 // =====
-// Header: Fixed size + Variable list of recipients
+// Header: has 3 parts:
+//    - Fixed sized header
+//    - Variable sized protobuf encoded header
+//    - SHA256 sum of both above.
+//
 // Fixed size header:
 //    - Magic: 7 bytes
 //    - Version: 1 byte
 //    - VLen:    4 byte
 //
 // Variable Length Segment:
+//    - Protobuf encoded, per-recipient wrapped keys
 //    - Shasum:  32 bytes (SHA256 of full header)
-//    - Protobuf encoded recipient info
 //
 // The variable length segment consists of one or more
 // recipients, their wrapped keys etc. This is encoded as
@@ -48,14 +52,16 @@ import (
 )
 
 // Encryption chunk size = 4MB
-const chunkSize uint32 = 4 * 1048576
-const maxChunkSize uint32 = 16 * 1048576
-const EOF uint32 = 1 << 31
+const (
+	chunkSize    uint32 = 4 * 1048576
+	maxChunkSize uint32 = 16 * 1048576
+	_EOF         uint32 = 1 << 31
 
-const _Magic = "SigTool"
-const _MagicLen = len(_Magic)
-const _AEADNonceLen = 32
-const _FixedHdrLen = _MagicLen + 1 + 4
+	_Magic        = "SigTool"
+	_MagicLen     = len(_Magic)
+	_AEADNonceLen = 32
+	_FixedHdrLen  = _MagicLen + 1 + 4
+)
 
 // Encryptor holds the encryption context
 type Encryptor struct {
@@ -73,7 +79,6 @@ type Encryptor struct {
 // signing any recipient keys. If 'sk' is nil, then ephmeral Curve25519 keys
 // are generated and used with recipient's public key.
 func NewEncryptor(sk *PrivateKey, blksize uint64) (*Encryptor, error) {
-
 	if blksize >= uint64(maxChunkSize) {
 		return nil, fmt.Errorf("encrypt: Blocksize is too large (max 16M)")
 	}
@@ -131,61 +136,6 @@ func (e *Encryptor) AddRecipient(pk *PublicKey) error {
 	return nil
 }
 
-// Begin the encryption process by writing the header
-func (e *Encryptor) start(wr io.Writer) error {
-	 varHdrLen := sha256.Size + e.Size()
-
-	 hdrBuf := make([]byte, _FixedHdrLen + varHdrLen)
-
-	 fixedHdr := hdrBuf[:_FixedHdrLen]
-	 varHdr := hdrBuf[_FixedHdrLen:]
-
-	 cksum := varHdr[:sha256.Size]
-	 pbHdr := varHdr[sha256.Size:]
-
-	 // Now assemble the fixed header
-	 copy(fixedHdr[:], []byte(_Magic))
-	 fixedHdr[_MagicLen] = 1 // version #
-	 binary.BigEndian.PutUint32(fixedHdr[_MagicLen+1:], uint32(varHdrLen))
-
-	// Now marshal the variable portion
-	_, err := e.MarshalToSizedBuffer(pbHdr)
-	if err != nil {
-		return fmt.Errorf("encrypt: can't marshal header: %s", err)
-	}
-
-	// Now calculate checksum of everything
-	h := sha256.New()
-	h.Write(fixedHdr)
-	h.Write(pbHdr)
-	h.Sum(cksum[:0])
-
-	// Finally write it out
-	err = fullwrite(hdrBuf, wr)
-	if err != nil {
-		return fmt.Errorf("encrypt: %s", err)
-	}
-
-	e.started = true
-	return nil
-}
-
-// Write _all_ bytes of buffer 'buf'
-func fullwrite(buf []byte, wr io.Writer) error {
-	n := len(buf)
-
-	for n > 0 {
-		m, err := wr.Write(buf)
-		if err != nil {
-			return fmt.Errorf("I/O error: %s", err)
-		}
-
-		n -= m
-		buf = buf[m:]
-	}
-	return nil
-}
-
 // Encrypt the input stream 'rd' and write encrypted stream to 'wr'
 func (e *Encryptor) Encrypt(rd io.Reader, wr io.Writer) error {
 	if !e.started {
@@ -219,6 +169,57 @@ func (e *Encryptor) Encrypt(rd io.Reader, wr io.Writer) error {
 	return nil
 }
 
+// Begin the encryption process by writing the header
+func (e *Encryptor) start(wr io.Writer) error {
+	varSize := e.Size()
+
+	buffer := make([]byte, _FixedHdrLen+varSize+sha256.Size)
+	fixHdr := buffer[:_FixedHdrLen]
+	varHdr := buffer[_FixedHdrLen:]
+	sumHdr := varHdr[varSize:]
+
+	// Now assemble the fixed header
+	copy(fixHdr[:], []byte(_Magic))
+	fixHdr[_MagicLen] = 1 // version #
+	binary.BigEndian.PutUint32(fixHdr[_MagicLen+1:], uint32(varSize))
+
+	// Now marshal the variable portion
+	_, err := e.MarshalToSizedBuffer(varHdr[:varSize])
+	if err != nil {
+		return fmt.Errorf("encrypt: can't marshal header: %s", err)
+	}
+
+	// Now calculate checksum of everything
+	h := sha256.New()
+	h.Write(buffer[:_FixedHdrLen+varSize])
+	h.Sum(sumHdr[:0])
+
+	// Finally write it out
+	err = fullwrite(buffer, wr)
+	if err != nil {
+		return fmt.Errorf("encrypt: %s", err)
+	}
+
+	e.started = true
+	return nil
+}
+
+// Write _all_ bytes of buffer 'buf'
+func fullwrite(buf []byte, wr io.Writer) error {
+	n := len(buf)
+
+	for n > 0 {
+		m, err := wr.Write(buf)
+		if err != nil {
+			return fmt.Errorf("I/O error: %s", err)
+		}
+
+		n -= m
+		buf = buf[m:]
+	}
+	return nil
+}
+
 // encrypt exactly _one_ block of data
 // The nonce for the block is: sha256(salt || chunkLen || block#)
 // This protects the output stream from re-ordering attacks and length
@@ -231,7 +232,7 @@ func (e *Encryptor) encrypt(buf []byte, wr io.Writer, i uint32, eof bool) error 
 
 	// mark last block
 	if eof {
-		z |= EOF
+		z |= _EOF
 	}
 
 	binary.BigEndian.PutUint32(b[:4], z)
@@ -285,29 +286,29 @@ func NewDecryptor(rd io.Reader) (*Decryptor, error) {
 		return nil, fmt.Errorf("decrypt: Unsupported version %d", b[_MagicLen])
 	}
 
-	hdrlen := binary.BigEndian.Uint32(b[_MagicLen+1:])
+	varSize := binary.BigEndian.Uint32(b[_MagicLen+1:])
 
 	// sanity check on variable segment length
-	if hdrlen > 1048576 {
+	if varSize > 1048576 {
 		return nil, fmt.Errorf("decrypt: header too large (max 1048576)")
 	}
-	if hdrlen < 32 {
+	if varSize < 32 {
 		return nil, fmt.Errorf("decrypt: header too small (min 32)")
 	}
 
-	hdr := make([]byte, hdrlen)
+	// SHA256 is the trailer part of the file-header
+	varBuf := make([]byte, varSize+sha256.Size)
 
-	_, err = io.ReadFull(rd, hdr)
+	_, err = io.ReadFull(rd, varBuf)
 	if err != nil {
 		return nil, fmt.Errorf("decrypt: err while reading header: %s", err)
 	}
 
-	verify := hdr[:sha256.Size]
-	pbHdr := hdr[sha256.Size:]
+	verify := varBuf[varSize:]
 
 	h := sha256.New()
 	h.Write(b[:])
-	h.Write(pbHdr)
+	h.Write(varBuf[:varSize])
 	cksum := h.Sum(nil)
 
 	if subtle.ConstantTimeCompare(verify, cksum[:]) == 0 {
@@ -318,7 +319,7 @@ func NewDecryptor(rd io.Reader) (*Decryptor, error) {
 		rd: rd,
 	}
 
-	err = d.Header.Unmarshal(pbHdr)
+	err = d.Header.Unmarshal(varBuf[:varSize])
 	if err != nil {
 		return nil, fmt.Errorf("decrypt: decode error: %s", err)
 	}
@@ -429,7 +430,7 @@ func (d *Decryptor) decrypt(i uint32) ([]byte, bool, error) {
 
 	n, err := io.ReadFull(d.rd, b[:4])
 	if err == io.EOF || err == io.ErrClosedPipe || n == 0 {
-		return nil, false, fmt.Errorf("decrypt: premature EOF-1 while reading block %d", i)
+		return nil, false, fmt.Errorf("decrypt: premature EOF while reading header block %d", i)
 	}
 
 	if err != nil {
@@ -437,12 +438,12 @@ func (d *Decryptor) decrypt(i uint32) ([]byte, bool, error) {
 	}
 
 	m := binary.BigEndian.Uint32(b[:4])
-	eof := (m & EOF) > 0
+	eof := (m & _EOF) > 0
 
-	m &= (EOF-1)
+	m &= (_EOF - 1)
 
 	// Sanity check - in case of corrupt header
-	if m > (uint32(d.ae.Overhead()) + chunkSize) {
+	if m > (uint32(d.ae.Overhead()) + d.ChunkSize) {
 		return nil, false, fmt.Errorf("decrypt: chunksize is too large (%d)", m)
 	}
 
@@ -456,7 +457,7 @@ func (d *Decryptor) decrypt(i uint32) ([]byte, bool, error) {
 	if m > 0 {
 		n, err = io.ReadFull(d.rd, d.buf[:m])
 		if err != nil {
-			return nil, false, fmt.Errorf("decrypt: premature EOF-2 while reading block %d: %s", i, err)
+			return nil, false, fmt.Errorf("decrypt: premature EOF while reading block %d: %s", i, err)
 		}
 
 		p, err = d.ae.Open(d.buf[:0], nonce, d.buf[:n], b[:])
