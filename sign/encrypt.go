@@ -481,34 +481,34 @@ func (pk *PublicKey) WrapKeyEphemeral(key []byte) (*WrappedKey, error) {
 	randread(newSK[:])
 	clamp(newSK[:])
 
-	return wrapKey(pk, key, &newSK)
+	return wrapKey(pk, key, newSK[:])
 }
 
 // given a file-encryption-key, wrap it in the identity of the recipient 'pk' using our
 // secret key. This function identifies the sender.
 func (sk *PrivateKey) WrapKey(pk *PublicKey, key []byte) (*WrappedKey, error) {
-	var ourSK [32]byte
-
-	copy(ourSK[:], sk.toCurve25519SK())
-
-	return wrapKey(pk, key, &ourSK)
+	return wrapKey(pk, key, sk.toCurve25519SK())
 }
 
-func wrapKey(pk *PublicKey, k []byte, ourSK *[32]byte) (*WrappedKey, error) {
-	var curvePK, theirPK, shared [32]byte
+func wrapKey(pk *PublicKey, k []byte, ourSK []byte) (*WrappedKey, error) {
+	curvePK, err := curve25519.X25519(ourSK, curve25519.Basepoint)
+	if err != nil {
+		return nil, fmt.Errorf("wrap: %s", err)
+	}
 
-	copy(theirPK[:], pk.toCurve25519PK())
-	curve25519.ScalarBaseMult(&curvePK, ourSK)
-	curve25519.ScalarMult(&shared, ourSK, &theirPK)
+	shared, err := curve25519.X25519(ourSK, pk.toCurve25519PK())
+	if err != nil {
+		return nil, fmt.Errorf("wrap: %s", err)
+	}
 
-	ek, nonce, err := aeadSeal(k, shared[:], pk.Pk)
+	ek, nonce, err := aeadSeal(k, shared, pk.Pk)
 	if err != nil {
 		return nil, fmt.Errorf("wrap: %s", err)
 	}
 
 	return &WrappedKey{
 		PkHash: pk.hash,
-		Pk:     curvePK[:],
+		Pk:     curvePK,
 		Nonce:  nonce,
 		Key:    ek,
 	}, nil
@@ -516,27 +516,24 @@ func wrapKey(pk *PublicKey, k []byte, ourSK *[32]byte) (*WrappedKey, error) {
 
 // Unwrap a wrapped key using the private key 'sk'
 func (w *WrappedKey) UnwrapKey(sk *PrivateKey, senderPk *PublicKey) ([]byte, error) {
-	var shared, theirPK, ourSK [32]byte
-
-	pk := sk.PublicKey()
-
-	copy(ourSK[:], sk.toCurve25519SK())
-	copy(theirPK[:], w.Pk)
-	curve25519.ScalarMult(&shared, &ourSK, &theirPK)
+	ourSK := sk.toCurve25519SK()
+	shared, err := curve25519.X25519(ourSK, w.Pk)
+	if err != nil {
+		return nil, fmt.Errorf("unwrap: %s", err)
+	}
 
 	if senderPk != nil {
-		var cPK, shared2 [32]byte
+		shared2, err := curve25519.X25519(ourSK, senderPk.toCurve25519PK())
+		if err != nil {
+			return nil, fmt.Errorf("unwrap: %s", err)
+		}
 
-		curvePK := senderPk.toCurve25519PK()
-
-		copy(cPK[:], curvePK)
-		curve25519.ScalarMult(&shared2, &ourSK, &cPK)
-
-		if subtle.ConstantTimeCompare(shared2[:], shared[:]) != 1 {
+		if subtle.ConstantTimeCompare(shared2, shared) != 1 {
 			return nil, fmt.Errorf("unwrap: sender validation failed")
 		}
 	}
 
+	pk := sk.PublicKey()
 	key, err := aeadOpen(w.Key, w.Nonce, shared[:], pk.Pk)
 	if err != nil {
 		return nil, err
