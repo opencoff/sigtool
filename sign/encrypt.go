@@ -79,13 +79,15 @@ type Encryptor struct {
 // signing any recipient keys. If 'sk' is nil, then ephmeral Curve25519 keys
 // are generated and used with recipient's public key.
 func NewEncryptor(sk *PrivateKey, blksize uint64) (*Encryptor, error) {
-	if blksize >= uint64(maxChunkSize) {
-		return nil, fmt.Errorf("encrypt: Blocksize is too large (max 16M)")
-	}
+	var blksz uint32
 
-	blksz := uint32(blksize)
-	if blksz == 0 {
+	switch {
+	case blksize == 0:
 		blksz = chunkSize
+	case blksize > uint64(maxChunkSize):
+		blksz = maxChunkSize
+	default:
+		blksz = uint32(blksize)
 	}
 
 	e := &Encryptor{
