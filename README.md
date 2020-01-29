@@ -199,9 +199,12 @@ chunk is encoded the same way:
 
 ```C
     4 byte chunk length (big endian encoding)
-    chunk data
+    encrypted chunk data
     AEAD tag
 ```
+
+The chunk length does _not_ include the AEAD tag length; it is implicitly 
+computed.
 
 The chunk data and AEAD tag are treated as an atomic unit for AEAD
 decryption.

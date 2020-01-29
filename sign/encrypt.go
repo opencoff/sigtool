@@ -11,8 +11,9 @@
 // warranty; it is provided "as is". No claim  is made to its
 // suitability for any purpose.
 //
-// Notes
-// =====
+
+// Implementation Notes for Encryption/Decryption:
+//
 // Header: has 3 parts:
 //    - Fixed sized header
 //    - Variable sized protobuf encoded header
@@ -32,6 +33,16 @@
 // a protobuf message. This protobuf encoded message immediately
 // follows the fixed length header.
 //
+// The input data is broken up into "chunks"; each no larger than
+// maxChunkSize. The default block size is "chunkSize". Each block
+// is AEAD encrypted:
+//   AEAD nonce = SHA256(header.salt || block# || block-size)
+//
+// The encrypted block (includes the AEAD tag) length is written
+// as a big-endian 4-byte prefix. The high-order bit of this length
+// field is set for the last-block (denoting EOF).
+//
+// The encrypted blocks use an opinionated nonce length of 32 (_AEADNonceLen).
 
 package sign
 
@@ -153,7 +164,7 @@ func (e *Encryptor) Encrypt(rd io.Reader, wr io.Writer) error {
 	var eof bool
 	for !eof {
 		n, err := io.ReadAtLeast(rd, buf, int(e.ChunkSize))
-		eof = err == io.EOF || err == io.ErrClosedPipe
+		eof = err == io.EOF || err == io.ErrClosedPipe || err == io.ErrUnexpectedEOF
 		if n >= 0 {
 			err = e.encrypt(buf[:n], wr, i, eof)
 			if err != nil {
@@ -230,7 +241,7 @@ func fullwrite(buf []byte, wr io.Writer) error {
 func (e *Encryptor) encrypt(buf []byte, wr io.Writer, i uint32, eof bool) error {
 	var b [8]byte
 	var noncebuf [32]byte
-	var z uint32 = uint32(e.ae.Overhead() + len(buf))
+	var z uint32 = uint32(len(buf))
 
 	// mark last block
 	if eof {
@@ -249,8 +260,8 @@ func (e *Encryptor) encrypt(buf []byte, wr io.Writer, i uint32, eof bool) error 
 	cbuf := e.buf[4:]
 	c := e.ae.Seal(cbuf[:0], nonce, buf, b[:])
 
+	// total number of bytes written
 	n := len(c) + 4
-
 	err := fullwrite(e.buf[:n], wr)
 	if err != nil {
 		return fmt.Errorf("encrypt: %s", err)
@@ -268,6 +279,7 @@ type Decryptor struct {
 
 	// Decrypted key
 	key []byte
+	eof bool
 }
 
 // Create a new decryption context and if 'pk' is given, check that it matches
@@ -330,7 +342,7 @@ func NewDecryptor(rd io.Reader) (*Decryptor, error) {
 		return nil, fmt.Errorf("decrypt: invalid chunkSize %d", d.ChunkSize)
 	}
 
-	if len(d.Salt) != 32 {
+	if len(d.Salt) != _AEADNonceLen {
 		return nil, fmt.Errorf("decrypt: invalid nonce length %d", len(d.Salt))
 	}
 
@@ -405,22 +417,28 @@ func (d *Decryptor) Decrypt(wr io.Writer) error {
 		return fmt.Errorf("decrypt: wrapped-key not decrypted (missing SetPrivateKey()?")
 	}
 
+	if d.eof {
+		return fmt.Errorf("decrypt: input stream has reached EOF")
+	}
+
 	var i uint32
 	for i = 0; ; i++ {
 		c, eof, err := d.decrypt(i)
 		if err != nil {
 			return err
 		}
-		if eof || len(c) == 0 {
-			return nil
-		}
-
 		if len(c) > 0 {
 			err = fullwrite(c, wr)
 			if err != nil {
 				return fmt.Errorf("decrypt: %s", err)
 			}
 		}
+
+		if eof {
+			d.eof = true
+			return nil
+		}
+
 	}
 	return nil
 }
@@ -429,14 +447,12 @@ func (d *Decryptor) Decrypt(wr io.Writer) error {
 func (d *Decryptor) decrypt(i uint32) ([]byte, bool, error) {
 	var b [8]byte
 	var nonceb [32]byte
+	var ovh uint32 = uint32(d.ae.Overhead())
+	var p []byte
 
 	n, err := io.ReadFull(d.rd, b[:4])
-	if err == io.EOF || err == io.ErrClosedPipe || n == 0 {
+	if err != nil || n == 0 {
 		return nil, false, fmt.Errorf("decrypt: premature EOF while reading header block %d", i)
-	}
-
-	if err != nil {
-		return nil, false, fmt.Errorf("decrypt: can't read chunk %d length: %s", i, err)
 	}
 
 	m := binary.BigEndian.Uint32(b[:4])
@@ -445,8 +461,20 @@ func (d *Decryptor) decrypt(i uint32) ([]byte, bool, error) {
 	m &= (_EOF - 1)
 
 	// Sanity check - in case of corrupt header
-	if m > (uint32(d.ae.Overhead()) + d.ChunkSize) {
+	switch {
+	case m > uint32(d.ChunkSize):
 		return nil, false, fmt.Errorf("decrypt: chunksize is too large (%d)", m)
+
+	case m == 0:
+		if !eof {
+			return nil, false, fmt.Errorf("decrypt: block %d: zero-sized chunk without EOF", i)
+		}
+		return p, eof, nil
+
+	case m < ovh:
+		return nil, false, fmt.Errorf("decrypt: chunksize is too small (%d)", m)
+
+	default:
 	}
 
 	binary.BigEndian.PutUint32(b[4:], i)
@@ -455,24 +483,18 @@ func (d *Decryptor) decrypt(i uint32) ([]byte, bool, error) {
 	h.Write(b[:])
 	nonce := h.Sum(nonceb[:0])
 
-	var p []byte
-	if m > 0 {
-		n, err = io.ReadFull(d.rd, d.buf[:m])
-		if err != nil {
-			return nil, false, fmt.Errorf("decrypt: premature EOF while reading block %d: %s", i, err)
-		}
-
-		p, err = d.ae.Open(d.buf[:0], nonce, d.buf[:n], b[:])
-		if err != nil {
-			return nil, false, fmt.Errorf("decrypt: can't decrypt chunk %d: %s", i, err)
-		}
+	z := m + ovh
+	n, err = io.ReadFull(d.rd, d.buf[:z])
+	if err != nil {
+		return nil, false, fmt.Errorf("decrypt: premature EOF while reading block %d: %s", i, err)
 	}
 
-	if eof && len(p) != 0 {
-		return nil, false, fmt.Errorf("decrypt: EOF set on blk %d of len %d", i, m)
+	p, err = d.ae.Open(d.buf[:0], nonce, d.buf[:n], b[:])
+	if err != nil {
+		return nil, false, fmt.Errorf("decrypt: can't decrypt chunk %d: %s", i, err)
 	}
 
-	return p, eof, nil
+	return p[:m], eof, nil
 }
 
 // Wrap a shared key with the recipient's public key 'pk' by generating an ephemeral

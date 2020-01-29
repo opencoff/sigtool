@@ -11,12 +11,10 @@
 // warranty; it is provided "as is". No claim  is made to its
 // suitability for any purpose.
 
-// Package sign implements Ed25519 signing, verification on files.
-// It builds upon golang.org/x/crypto/ed25519 by adding methods
-// for serializing and deserializing Ed25519 private & public keys.
-// In addition, it works with large files - by precalculating their
-// SHA512 checksum in mmap'd mode and sending the 64 byte signature
-// for Ed25519 signing.
+// This file implements:
+//   - key generation, and key I/O
+//   - sign/verify of files and byte strings
+
 package sign
 
 import (

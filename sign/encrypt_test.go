@@ -29,13 +29,16 @@ func TestEncryptSimple(t *testing.T) {
 	receiver, err := NewKeypair()
 	assert(err == nil, "receiver keypair gen failed: %s", err)
 
+	var blkSize int = 1024
+	var size int = (blkSize * 10)
+
 	// cleartext
-	buf := make([]byte, 64*1024)
+	buf := make([]byte, size)
 	for i := 0; i < len(buf); i++ {
 		buf[i] = byte(i & 0xff)
 	}
 
-	ee, err := NewEncryptor(nil, 4096)
+	ee, err := NewEncryptor(nil, uint64(blkSize))
 	assert(err == nil, "encryptor create fail: %s", err)
 
 	err = ee.AddRecipient(&receiver.Pub)
@@ -72,19 +75,22 @@ func TestEncryptCorrupted(t *testing.T) {
 	receiver, err := NewKeypair()
 	assert(err == nil, "receiver keypair gen failed: %s", err)
 
+	var blkSize int = 1024
+	var size int = (blkSize * 23) + randmod(blkSize)
+
 	// cleartext
-	buf := make([]byte, 64*1024)
+	buf := make([]byte, size)
 	for i := 0; i < len(buf); i++ {
 		buf[i] = byte(i & 0xff)
 	}
 
-	ee, err := NewEncryptor(nil, 4096)
+	ee, err := NewEncryptor(nil, uint64(blkSize))
 	assert(err == nil, "encryptor create fail: %s", err)
 
 	err = ee.AddRecipient(&receiver.Pub)
 	assert(err == nil, "can't add recipient: %s", err)
 
-	rd := bytes.NewBuffer(buf)
+	rd := bytes.NewReader(buf)
 	wr := bytes.Buffer{}
 
 	err = ee.Encrypt(rd, &wr)
@@ -98,7 +104,7 @@ func TestEncryptCorrupted(t *testing.T) {
 		rb[j] = byte(randint() & 0xff)
 	}
 
-	rd = bytes.NewBuffer(rb)
+	rd = bytes.NewReader(rb)
 	dd, err := NewDecryptor(rd)
 	assert(err != nil, "decryptor works on bad input")
 	assert(dd == nil, "decryptor not nil for bad input")
@@ -114,13 +120,16 @@ func TestEncryptSenderVerified(t *testing.T) {
 	receiver, err := NewKeypair()
 	assert(err == nil, "receiver keypair gen failed: %s", err)
 
+	var blkSize int = 1024
+	var size int = (blkSize * 23) + randmod(blkSize)
+
 	// cleartext
-	buf := make([]byte, 64*1024)
+	buf := make([]byte, size)
 	for i := 0; i < len(buf); i++ {
 		buf[i] = byte(i & 0xff)
 	}
 
-	ee, err := NewEncryptor(&sender.Sec, 4096)
+	ee, err := NewEncryptor(&sender.Sec, uint64(blkSize))
 	assert(err == nil, "encryptor create fail: %s", err)
 
 	err = ee.AddRecipient(&receiver.Pub)
@@ -157,13 +166,16 @@ func TestEncryptMultiReceiver(t *testing.T) {
 	sender, err := NewKeypair()
 	assert(err == nil, "sender keypair gen failed: %s", err)
 
+	var blkSize int = 1024
+	var size int = (blkSize * 23) + randmod(blkSize)
+
 	// cleartext
-	buf := make([]byte, 64*1024)
+	buf := make([]byte, size)
 	for i := 0; i < len(buf); i++ {
 		buf[i] = byte(i & 0xff)
 	}
 
-	ee, err := NewEncryptor(&sender.Sec, 4096)
+	ee, err := NewEncryptor(&sender.Sec, uint64(blkSize))
 	assert(err == nil, "encryptor create fail: %s", err)
 
 	n := 4
@@ -215,4 +227,8 @@ func randint() int {
 	u := binary.BigEndian.Uint32(b[:])
 
 	return int(u & 0x7fffffff)
+}
+
+func randmod(m int) int {
+	return randint() % m
 }
