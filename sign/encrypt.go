@@ -164,7 +164,15 @@ func (e *Encryptor) Encrypt(rd io.Reader, wr io.Writer) error {
 	var eof bool
 	for !eof {
 		n, err := io.ReadAtLeast(rd, buf, int(e.ChunkSize))
-		eof = err == io.EOF || err == io.ErrClosedPipe || err == io.ErrUnexpectedEOF
+		if err != nil {
+			switch err {
+			case io.EOF, io.ErrClosedPipe, io.ErrUnexpectedEOF:
+				eof = true
+			default:
+				return fmt.Errorf("encrypt: I/O read error: %s", err)
+			}
+		}
+
 		if n >= 0 {
 			err = e.encrypt(buf[:n], wr, i, eof)
 			if err != nil {
@@ -172,11 +180,6 @@ func (e *Encryptor) Encrypt(rd io.Reader, wr io.Writer) error {
 			}
 
 			i++
-			continue
-		}
-
-		if err != nil && err != io.EOF && err != io.ErrClosedPipe {
-			return fmt.Errorf("encrypt: I/O read error: %s", err)
 		}
 	}
 	return nil
