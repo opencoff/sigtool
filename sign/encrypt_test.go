@@ -22,6 +22,14 @@ import (
 	"testing"
 )
 
+type Buffer struct {
+	bytes.Buffer
+}
+
+func (b *Buffer) Close() error {
+	return nil
+}
+
 // one sender, one receiver no verification of sender
 func TestEncryptSimple(t *testing.T) {
 	assert := newAsserter(t)
@@ -45,7 +53,7 @@ func TestEncryptSimple(t *testing.T) {
 	assert(err == nil, "can't add recipient: %s", err)
 
 	rd := bytes.NewBuffer(buf)
-	wr := bytes.Buffer{}
+	wr := Buffer{}
 
 	err = ee.Encrypt(rd, &wr)
 	assert(err == nil, "encrypt fail: %s", err)
@@ -58,7 +66,7 @@ func TestEncryptSimple(t *testing.T) {
 	err = dd.SetPrivateKey(&receiver.Sec, nil)
 	assert(err == nil, "decryptor can't add SK: %s", err)
 
-	wr = bytes.Buffer{}
+	wr = Buffer{}
 	err = dd.Decrypt(&wr)
 	assert(err == nil, "decrypt fail: %s", err)
 
@@ -91,7 +99,7 @@ func TestEncryptCorrupted(t *testing.T) {
 	assert(err == nil, "can't add recipient: %s", err)
 
 	rd := bytes.NewReader(buf)
-	wr := bytes.Buffer{}
+	wr := Buffer{}
 
 	err = ee.Encrypt(rd, &wr)
 	assert(err == nil, "encrypt fail: %s", err)
@@ -136,7 +144,7 @@ func TestEncryptSenderVerified(t *testing.T) {
 	assert(err == nil, "can't add recipient: %s", err)
 
 	rd := bytes.NewBuffer(buf)
-	wr := bytes.Buffer{}
+	wr := Buffer{}
 
 	err = ee.Encrypt(rd, &wr)
 	assert(err == nil, "encrypt fail: %s", err)
@@ -149,7 +157,7 @@ func TestEncryptSenderVerified(t *testing.T) {
 	err = dd.SetPrivateKey(&receiver.Sec, &sender.Pub)
 	assert(err == nil, "decryptor can't add SK: %s", err)
 
-	wr = bytes.Buffer{}
+	wr = Buffer{}
 	err = dd.Decrypt(&wr)
 	assert(err == nil, "decrypt fail: %s", err)
 
@@ -190,7 +198,7 @@ func TestEncryptMultiReceiver(t *testing.T) {
 	}
 
 	rd := bytes.NewBuffer(buf)
-	wr := bytes.Buffer{}
+	wr := Buffer{}
 
 	err = ee.Encrypt(rd, &wr)
 	assert(err == nil, "encrypt fail: %s", err)
@@ -205,7 +213,7 @@ func TestEncryptMultiReceiver(t *testing.T) {
 		err = dd.SetPrivateKey(&rx[i].Sec, &sender.Pub)
 		assert(err == nil, "decryptor can't add SK %d: %s", i, err)
 
-		wr = bytes.Buffer{}
+		wr = Buffer{}
 		err = dd.Decrypt(&wr)
 		assert(err == nil, "decrypt %d fail: %s", i, err)
 
@@ -214,6 +222,88 @@ func TestEncryptMultiReceiver(t *testing.T) {
 
 		assert(byteEq(b, buf), "decrypt %d content mismatch", i)
 	}
+}
+
+// Test stream write and read
+func TestStreamIO(t *testing.T) {
+	assert := newAsserter(t)
+
+	receiver, err := NewKeypair()
+	assert(err == nil, "receiver keypair gen failed: %s", err)
+
+	var blkSize int = 1024
+	var size int = (blkSize * 10)
+
+	// cleartext
+	buf := make([]byte, size)
+	for i := 0; i < len(buf); i++ {
+		buf[i] = byte(i & 0xff)
+	}
+
+	ee, err := NewEncryptor(nil, uint64(blkSize))
+	assert(err == nil, "encryptor create fail: %s", err)
+
+	err = ee.AddRecipient(&receiver.Pub)
+	assert(err == nil, "can't add recipient: %s", err)
+
+	wr := Buffer{}
+	wio, err := ee.NewStreamWriter(&wr)
+	assert(err == nil, "can't start stream writer: %s", err)
+
+	// chunksize for writing to stream
+	csize := 19
+	rbuf := buf
+	for len(rbuf) > 0 {
+		m := csize
+		if len(rbuf) < m {
+			m = len(rbuf)
+		}
+
+		n, err := wio.Write(rbuf[:m])
+		assert(err == nil, "stream write failed: %s", err)
+		assert(n == m, "stream write mismatch: exp %d, saw %d", m, n)
+
+		rbuf = rbuf[m:]
+	}
+	err = wio.Close()
+	assert(err == nil, "stream close failed: %s", err)
+
+	_, err = wio.Write(buf[:csize])
+	assert(err != nil, "stream write accepted I/O after close: %s", err)
+
+	rd := bytes.NewBuffer(wr.Bytes())
+
+	dd, err := NewDecryptor(rd)
+	assert(err == nil, "decryptor create fail: %s", err)
+
+	err = dd.SetPrivateKey(&receiver.Sec, nil)
+	assert(err == nil, "decryptor can't add SK: %s", err)
+
+	rio, err := dd.NewStreamReader()
+	assert(err == nil, "stream reader failed: %s", err)
+
+	rbuf = make([]byte, csize)
+	wr = Buffer{}
+	n := 0
+	for {
+		m, err := rio.Read(rbuf)
+		assert(err == nil || err == io.EOF, "streamread fail: %s", err)
+
+		if m > 0 {
+			wr.Write(rbuf[:m])
+			n += m
+		}
+		if err == io.EOF || m == 0 {
+			break
+		}
+	}
+
+	b := wr.Bytes()
+	assert(n == len(b), "streamread: bad buflen; exp %d, saw %d", n, len(b))
+	assert(n == len(buf), "streamread: decrypt len mismatch; exp %d, saw %d", len(buf), n)
+
+	assert(byteEq(b, buf), "decrypt content mismatch")
+
 }
 
 func randint() int {

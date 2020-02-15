@@ -79,7 +79,7 @@ func encrypt(args []string) {
 	}
 
 	var infd io.Reader = os.Stdin
-	var outfd io.Writer = os.Stdout
+	var outfd io.WriteCloser = os.Stdout
 	var inf *os.File
 
 	if len(args) > 1 {

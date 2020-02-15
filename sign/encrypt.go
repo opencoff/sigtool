@@ -83,7 +83,8 @@ type Encryptor struct {
 	sender  *PrivateKey
 	started bool
 
-	buf []byte
+	buf    []byte
+	stream bool
 }
 
 // Create a new Encryption context and use the optional private key 'sk' for
@@ -150,7 +151,11 @@ func (e *Encryptor) AddRecipient(pk *PublicKey) error {
 }
 
 // Encrypt the input stream 'rd' and write encrypted stream to 'wr'
-func (e *Encryptor) Encrypt(rd io.Reader, wr io.Writer) error {
+func (e *Encryptor) Encrypt(rd io.Reader, wr io.WriteCloser) error {
+	if e.stream {
+		return fmt.Errorf("encrypt: can't use Encrypt() after using streaming I/O")
+	}
+
 	if !e.started {
 		err := e.start(wr)
 		if err != nil {
@@ -182,7 +187,8 @@ func (e *Encryptor) Encrypt(rd io.Reader, wr io.Writer) error {
 			i++
 		}
 	}
-	return nil
+
+	return wr.Close()
 }
 
 // Begin the encryption process by writing the header
@@ -281,8 +287,9 @@ type Decryptor struct {
 	buf []byte
 
 	// Decrypted key
-	key []byte
-	eof bool
+	key    []byte
+	eof    bool
+	stream bool
 }
 
 // Create a new decryption context and if 'pk' is given, check that it matches
@@ -420,8 +427,12 @@ func (d *Decryptor) Decrypt(wr io.Writer) error {
 		return fmt.Errorf("decrypt: wrapped-key not decrypted (missing SetPrivateKey()?")
 	}
 
+	if d.stream {
+		return fmt.Errorf("decrypt: can't use Decrypt() after using streaming I/O")
+	}
+
 	if d.eof {
-		return fmt.Errorf("decrypt: input stream has reached EOF")
+		return io.EOF
 	}
 
 	var i uint32
@@ -441,7 +452,6 @@ func (d *Decryptor) Decrypt(wr io.Writer) error {
 			d.eof = true
 			return nil
 		}
-
 	}
 	return nil
 }
