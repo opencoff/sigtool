@@ -25,6 +25,11 @@ var _ = math.Inf
 // proto package needs to be updated.
 const _ = proto.GoGoProtoPackageIsVersion3 // please upgrade the proto package
 
+//
+// Every encrypted file starts with a header describing the
+// Block Size, Salt, Recipient keys etc. Header represents a
+// decoded version of this information. It is encoded in
+// protobuf format before writing to disk.
 type Header struct {
 	ChunkSize uint32        `protobuf:"varint,1,opt,name=chunk_size,json=chunkSize,proto3" json:"chunk_size,omitempty"`
 	Salt      []byte        `protobuf:"bytes,2,opt,name=salt,proto3" json:"salt,omitempty"`
@@ -84,6 +89,9 @@ func (m *Header) GetKeys() []*WrappedKey {
 	return nil
 }
 
+//
+// A file encryption key is wrapped by a recipient specific public
+// key. WrappedKey describes such a wrapped key.
 type WrappedKey struct {
 	PkHash []byte `protobuf:"bytes,1,opt,name=pk_hash,json=pkHash,proto3" json:"pk_hash,omitempty"`
 	Pk     []byte `protobuf:"bytes,2,opt,name=pk,proto3" json:"pk,omitempty"`

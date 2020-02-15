@@ -9,12 +9,22 @@ package sign;
 //option (gogoproto.unmarshaler_all) = true;
 //option (gogoproto.goproto_getters_all) = false;
 
+/*
+ * Every encrypted file starts with a header describing the
+ * Block Size, Salt, Recipient keys etc. Header represents a
+ * decoded version of this information. It is encoded in
+ * protobuf format before writing to disk.
+ */
 message header {
 	uint32 chunk_size = 1;
 	bytes  salt = 2;
 	repeated wrapped_key keys = 3;
 }
 
+/*
+ * A file encryption key is wrapped by a recipient specific public
+ * key. WrappedKey describes such a wrapped key.
+ */
 message wrapped_key {
 	bytes pk_hash = 1; // hash of Ed25519 PK
 	bytes pk = 2;	    // curve25519 PK
