@@ -17,7 +17,7 @@ Progs=".:sigtool"
 
 # Relative path to protobuf sources
 # e.g. src/foo/a.proto
-Protobufs="sign/hdr.proto"
+Protobufs="internal/pb/hdr.proto"
 
 
 # -- DO NOT CHANGE ANYTHING AFTER THIS --

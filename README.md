@@ -140,14 +140,15 @@ recipient can decrypt using their private key.
 
 ### How is the private key protected?
 The Ed25519 private key is encrypted in AES-GCM-256 mode using a key
-derived from the user's pass phrase.
+derived from the user's pass-phrase.
 
 ### How is the Encryption done?
 The file encryption uses AES-GCM-256 in AEAD mode. The encryption uses
-a random 32-byte AES-256 key. The input is broken into chunks and
-each chunk is individually AEAD encrypted. The default chunk size
-is 4MB (4 * 1048576 bytes). Each chunk generates its own nonce
-from a global salt. The nonce is calculated as a SHA256 hash of
+a random 32-byte AES-256 key. This key is mixed in with the header checksum
+as a safeguard to protect the header against accidental or malicious corruption.
+The input is broken into chunks and each chunk is individually AEAD encrypted.
+The default chunk size is 4MB (4 * 1048576 bytes). Each chunk generates
+its own nonce from a global salt. The nonce is calculated as a SHA256 hash of
 the salt, the chunk length and the block number.
 
 ### What is the public-key cryptography?
@@ -179,16 +180,26 @@ described as a protobuf file (sign/hdr.proto):
 
 ```protobuf
     message header {
-        uint32 chunk_size = 1;
-        bytes  salt = 2;
-        repeated wrapped_key keys = 3;
+	uint32 chunk_size	  = 1;
+	bytes  salt		  = 2;
+	bytes  pk		  = 3;	// sender's ephemeral curve PK
+	sender sender_pk	  = 4;   // sender's encrypted ed25519 PK
+	repeated wrapped_key keys = 5;
     }
 
+    /*
+     * Sender info is wrapped using the data encryption key
+     */
+    message sender {
+	bytes pk = 1;
+    }
+
+    /*
+     * A file encryption key is wrapped by a recipient specific public
+     * key. WrappedKey describes such a wrapped key.
+     */
     message wrapped_key {
-        bytes pk_hash = 1; // hash of Ed25519 PK
-        bytes pk = 2;       // curve25519 PK
-        bytes nonce = 3;    // AEAD nonce
-        bytes key = 4;      // AEAD encrypted key
+	bytes key = 2;
     }
 ```
 
@@ -203,18 +214,23 @@ chunk is encoded the same way:
     AEAD tag
 ```
 
-The chunk length does _not_ include the AEAD tag length; it is implicitly 
+The chunk length does _not_ include the AEAD tag length; it is implicitly
 computed.
 
 The chunk data and AEAD tag are treated as an atomic unit for AEAD
 decryption.
 
 ## Understanding the Code
-`src/sign` is a library to generate, verify and store Ed25519 keys
-and signatures.  It uses the extended library (golang.org/x/crypto)
-for the underlying operations.
+The core logic is in `src/sign`: it is a library that exposes all the
+functionality: key generation, key parsing, signing, encryption, decryption
+etc.
 
-`src/crypt.go` contains the encryption & decryption code.
+* `src/encrypt.go` contains the core encryption, decryption code
+* `src/sign.go`    contains the Ed25519 signing, verification code
+* `src/keys.go`    contains key generation, serialization, de-serialization
+* `src/ssh.go`     contains code to parse SSH Ed25519 key files
+* `src/stream.go`  contains code that provides an `io.Reader` and `io.WriteCloser` interface
+ 		   for encryption and decryption.
 
 The generated keys and signatures are proper YAML files and human
 readable.

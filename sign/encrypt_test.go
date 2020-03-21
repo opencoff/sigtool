@@ -154,6 +154,13 @@ func TestEncryptSenderVerified(t *testing.T) {
 	dd, err := NewDecryptor(rd)
 	assert(err == nil, "decryptor create fail: %s", err)
 
+	// first send a wrong sender key
+	randkey, err := NewKeypair()
+	assert(err == nil, "receiver rand keypair gen failed: %s", err)
+
+	err = dd.SetPrivateKey(&receiver.Sec, &randkey.Pub)
+	assert(err != nil, "decryptor failed to verify sender")
+
 	err = dd.SetPrivateKey(&receiver.Sec, &sender.Pub)
 	assert(err == nil, "decryptor can't add SK: %s", err)
 

@@ -2,7 +2,7 @@ syntax="proto3";
 
 //import "gogoproto/gogo.proto"
 
-package sign;
+package pb;
 
 //option (gogoproto.marshaler_all) = true;
 //option (gogoproto.sizer_all) = true;
@@ -16,9 +16,18 @@ package sign;
  * protobuf format before writing to disk.
  */
 message header {
-	uint32 chunk_size = 1;
-	bytes  salt = 2;
-	repeated wrapped_key keys = 3;
+	uint32 chunk_size	  = 1;
+	bytes  salt		  = 2;
+	bytes  pk		  = 3;	// sender's ephemeral curve PK
+	sender sender_pk	  = 4;   // sender's encrypted ed25519 PK
+	repeated wrapped_key keys = 5;
+}
+
+/*
+ * Sender info is wrapped using the data encryption key
+ */
+message sender {
+	bytes pk = 1;
 }
 
 /*
@@ -26,8 +35,5 @@ message header {
  * key. WrappedKey describes such a wrapped key.
  */
 message wrapped_key {
-	bytes pk_hash = 1; // hash of Ed25519 PK
-	bytes pk = 2;	    // curve25519 PK
-	bytes nonce = 3;    // AEAD nonce
-	bytes key = 4;	    // AEAD encrypted key
+	bytes key = 2;
 }

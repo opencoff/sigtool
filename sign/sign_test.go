@@ -19,6 +19,8 @@ import (
 	"os"
 	"path"
 	"testing"
+
+	"github.com/opencoff/sigtool/internal/pb"
 )
 
 // Return a temp dir in a temp-dir
@@ -28,7 +30,7 @@ func tempdir(t *testing.T) string {
 	var b [10]byte
 
 	dn := os.TempDir()
-	randread(b[:])
+	pb.Randread(b[:])
 
 	tmp := path.Join(dn, fmt.Sprintf("%x", b[:]))
 	err := os.MkdirAll(tmp, 0755)
@@ -135,7 +137,7 @@ func TestSignRandBuf(t *testing.T) {
 
 	var ck [64]byte // simulates sha512 sum
 
-	randread(ck[:])
+	pb.Randread(ck[:])
 
 	pk := &kp.Pub
 	sk := &kp.Sec
@@ -148,7 +150,7 @@ func TestSignRandBuf(t *testing.T) {
 	assert(ss.IsPKMatch(pk), "pk match fail")
 
 	// Corrupt the pkhash and see
-	randread(ss.pkhash)
+	pb.Randread(ss.pkhash)
 	assert(!ss.IsPKMatch(pk), "corrupt pk match fail")
 
 	// Incorrect checksum == should fail verification
@@ -185,7 +187,7 @@ func TestSignRandBuf(t *testing.T) {
 	assert(err == nil, "file.dat creat file")
 
 	for i := 0; i < 8; i++ {
-		randread(buf[:])
+		pb.Randread(buf[:])
 		n, err := fd.Write(buf[:])
 		assert(err == nil, fmt.Sprintf("file.dat write fail: %s", err))
 		assert(n == 8192, fmt.Sprintf("file.dat i/o fail: exp 8192 saw %v", n))
@@ -286,7 +288,7 @@ func benchVerify(b *testing.B, buf []byte, sig *Signature, pk *PublicKey) {
 
 func randbuf(sz uint) []byte {
 	b := make([]byte, sz)
-	randread(b)
+	pb.Randread(b)
 	return b
 }
 
