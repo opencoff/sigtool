@@ -28,6 +28,7 @@ import (
 	"encoding/binary"
 	"fmt"
 	"hash"
+	"io"
 	"io/ioutil"
 	"math/big"
 	"os"
@@ -37,7 +38,6 @@ import (
 	"gopkg.in/yaml.v2"
 
 	"github.com/opencoff/go-utils"
-	"github.com/opencoff/sigtool/internal/pb"
 )
 
 // Private Ed25519 key
@@ -68,12 +68,6 @@ type PublicKey struct {
 type Keypair struct {
 	Sec PrivateKey
 	Pub PublicKey
-}
-
-// An Ed25519 Signature
-type Signature struct {
-	Sig    []byte // Ed25519 sig bytes
-	pkhash []byte // [0:16] SHA256 hash of public key needed for verification
 }
 
 // Length of Ed25519 Public Key Hash
@@ -349,7 +343,7 @@ func (sk *PrivateKey) serialize(fn, comment string, getpw func() ([]byte, error)
 	pass := sha512.Sum512(pw)
 	salt := make([]byte, 32)
 
-	pb.Randread(salt)
+	randRead(salt)
 
 	// "32" == Length of AES-256 key
 	key, err := scrypt.Key(pass[:], salt, _N, _r, _p, 32)
@@ -542,6 +536,14 @@ func clamp(k []byte) []byte {
 	k[31] &= 127
 	k[31] |= 64
 	return k
+}
+
+func randRead(b []byte) []byte {
+	_, err := io.ReadFull(rand.Reader, b)
+	if err != nil {
+		panic(fmt.Sprintf("can't read %d bytes of random data: %s", len(b), err))
+	}
+	return b
 }
 
 // EOF

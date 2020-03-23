@@ -43,7 +43,7 @@ func encrypt(args []string) {
 	fs.StringVarP(&keyfile, "sign", "s", "", "Sign using private key `S`")
 	fs.BoolVarP(&nopw, "no-password", "", false, "Don't ask for passphrase to decrypt the private key")
 	fs.StringVarP(&envpw, "env-password", "", "", "Use passphrase from environment variable `E`")
-	fs.SizeVarP(&blksize, "block-size", "B", 128 * 1024, "Use `S` as the encryption block size")
+	fs.SizeVarP(&blksize, "block-size", "B", 128*1024, "Use `S` as the encryption block size")
 
 	err := fs.Parse(args)
 	if err != nil {
@@ -264,7 +264,7 @@ func decrypt(args []string) {
 			infd = inf
 		}
 	}
- 
+
 	if test {
 		outfd = &nullWriter{}
 	} else if len(outfile) > 0 && outfile != "-" {
@@ -296,6 +296,14 @@ func decrypt(args []string) {
 	err = d.SetPrivateKey(sk, pk)
 	if err != nil {
 		die("%s", err)
+	}
+
+	if pk == nil && d.AuthenticatedSender() {
+		var fn string = infile
+		if len(fn) == 0 || fn == "-" {
+			fn = "<stdin>"
+		}
+		warn("%s: Missing sender Public Key; can't authenticate sender ..", fn)
 	}
 
 	err = d.Decrypt(outfd)

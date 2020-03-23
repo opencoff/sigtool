@@ -19,8 +19,6 @@ import (
 	"os"
 	"path"
 	"testing"
-
-	"github.com/opencoff/sigtool/internal/pb"
 )
 
 // Return a temp dir in a temp-dir
@@ -30,7 +28,7 @@ func tempdir(t *testing.T) string {
 	var b [10]byte
 
 	dn := os.TempDir()
-	pb.Randread(b[:])
+	randRead(b[:])
 
 	tmp := path.Join(dn, fmt.Sprintf("%x", b[:]))
 	err := os.MkdirAll(tmp, 0755)
@@ -137,7 +135,7 @@ func TestSignRandBuf(t *testing.T) {
 
 	var ck [64]byte // simulates sha512 sum
 
-	pb.Randread(ck[:])
+	randRead(ck[:])
 
 	pk := &kp.Pub
 	sk := &kp.Sec
@@ -150,17 +148,15 @@ func TestSignRandBuf(t *testing.T) {
 	assert(ss.IsPKMatch(pk), "pk match fail")
 
 	// Corrupt the pkhash and see
-	pb.Randread(ss.pkhash)
+	randRead(ss.pkhash)
 	assert(!ss.IsPKMatch(pk), "corrupt pk match fail")
 
 	// Incorrect checksum == should fail verification
-	ok, err := pk.VerifyMessage(ck[:16], ss)
-	assert(err == nil, "bad ck verify err fail")
+	ok := pk.VerifyMessage(ck[:16], ss)
 	assert(!ok, "bad ck verify fail")
 
 	// proper checksum == should work
-	ok, err = pk.VerifyMessage(ck[:], ss)
-	assert(err == nil, "verify err")
+	ok = pk.VerifyMessage(ck[:], ss)
 	assert(ok, "verify fail")
 
 	// Now sign a file
@@ -187,7 +183,7 @@ func TestSignRandBuf(t *testing.T) {
 	assert(err == nil, "file.dat creat file")
 
 	for i := 0; i < 8; i++ {
-		pb.Randread(buf[:])
+		randRead(buf[:])
 		n, err := fd.Write(buf[:])
 		assert(err == nil, fmt.Sprintf("file.dat write fail: %s", err))
 		assert(n == 8192, fmt.Sprintf("file.dat i/o fail: exp 8192 saw %v", n))
@@ -288,7 +284,7 @@ func benchVerify(b *testing.B, buf []byte, sig *Signature, pk *PublicKey) {
 
 func randbuf(sz uint) []byte {
 	b := make([]byte, sz)
-	pb.Randread(b)
+	randRead(b)
 	return b
 }
 

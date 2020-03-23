@@ -30,6 +30,12 @@ import (
 	"gopkg.in/yaml.v2"
 )
 
+// An Ed25519 Signature
+type Signature struct {
+	Sig    []byte // Ed25519 sig bytes
+	pkhash []byte // [0:16] SHA256 hash of public key needed for verification
+}
+
 // Sign a prehashed Message; return the signature as opaque bytes
 // Signature is an YAML file:
 //    Comment: source file path
@@ -147,19 +153,19 @@ func (pk *PublicKey) VerifyFile(fn string, sig *Signature) (bool, error) {
 		return false, err
 	}
 
-	return pk.VerifyMessage(ck, sig)
+	return pk.VerifyMessage(ck, sig), nil
 }
 
 // Verify a signature 'sig' for a pre-calculated checksum 'ck' against public key 'pk'
 // Return True if signature matches, False otherwise
-func (pk *PublicKey) VerifyMessage(ck []byte, sig *Signature) (bool, error) {
+func (pk *PublicKey) VerifyMessage(ck []byte, sig *Signature) bool {
 	h := sha512.New()
 	h.Write([]byte("sigtool signed message"))
 	h.Write(ck)
 	ck = h.Sum(nil)[:]
 
 	x := Ed.PublicKey(pk.Pk)
-	return Ed.Verify(x, ck, sig.Sig), nil
+	return Ed.Verify(x, ck, sig.Sig)
 }
 
 // vim: noexpandtab:ts=8:sw=8:tw=92:

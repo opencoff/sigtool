@@ -56,6 +56,7 @@ import (
 	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/ed25519"
 	"crypto/sha256"
 	"crypto/sha512"
 	"crypto/subtle"
@@ -76,8 +77,12 @@ const (
 
 	_Magic        = "SigTool"
 	_MagicLen     = len(_Magic)
-	_AEADNonceLen = 32
+	_AEADNonceLen = 16
 	_FixedHdrLen  = _MagicLen + 1 + 4
+
+	_WrapReceiverNonce = "Receiver Key Nonce"
+	_WrapSenderNonce   = "Sender Sig Nonce"
+	_EncryptNonce      = "Encrypt Nonce"
 )
 
 // Encryptor holds the encryption context
@@ -87,9 +92,8 @@ type Encryptor struct {
 
 	ae cipher.AEAD
 
-	// sender ephemeral curve 25519 SK
-	// the corresponding PK is in Header above
-	senderSK []byte
+	// ephemeral key
+	encSK []byte
 
 	started bool
 
@@ -98,9 +102,8 @@ type Encryptor struct {
 	stream bool
 }
 
-// Create a new Encryption context and use the optional private key 'sk' for
-// signing any recipient keys. If 'sk' is nil, then ephmeral Curve25519 keys
-// are generated and used with recipient's public key.
+// Create a new Encryption context for encrypting blocks of size 'blksize'.
+// If 'sk' is not nil, authenticate the sender to each receiver.
 func NewEncryptor(sk *PrivateKey, blksize uint64) (*Encryptor, error) {
 	var blksz uint32
 
@@ -113,7 +116,8 @@ func NewEncryptor(sk *PrivateKey, blksize uint64) (*Encryptor, error) {
 		blksz = uint32(blksize)
 	}
 
-	csk, cpk, err := newSender()
+	// generate ephemeral Curve25519 keys
+	esk, epk, err := newSender()
 	if err != nil {
 		return nil, fmt.Errorf("encrypt: %s", err)
 	}
@@ -121,33 +125,39 @@ func NewEncryptor(sk *PrivateKey, blksize uint64) (*Encryptor, error) {
 	key := make([]byte, 32)
 	salt := make([]byte, _AEADNonceLen)
 
-	pb.Randread(key)
-	pb.Randread(salt)
+	randRead(key)
+	randRead(salt)
 
-	// if sender has provided their identity to authenticate, we will use their PK
-	senderPK := cpk
+	// if sender has provided their identity to authenticate, we sign the data-enc key
+	// and encrypt the signature. At no point will we send the sender's identity.
+	var senderSig []byte
 	if sk != nil {
-		epk := sk.PublicKey()
-		senderPK = epk.toCurve25519PK()
+		sig, err := sk.SignMessage(key, "")
+		if err != nil {
+			return nil, fmt.Errorf("encrypt: can't sign: %s", err)
+		}
+
+		senderSig = sig.Sig
+	} else {
+		var zero [ed25519.SignatureSize]byte
+		senderSig = zero[:]
 	}
 
-	wPk, err := pb.WrapSenderPK(senderPK, key, salt)
+	wSig, err := wrapSenderSig(senderSig, key, salt)
 	if err != nil {
 		return nil, fmt.Errorf("encrypt: %s", err)
 	}
 
 	e := &Encryptor{
 		Header: pb.Header{
-			ChunkSize: blksz,
-			Salt:      salt,
-			Pk:        cpk,
-			SenderPk: &pb.Sender{
-				Pk: wPk,
-			},
+			ChunkSize:  blksz,
+			Salt:       salt,
+			Pk:         epk,
+			SenderSign: wSig,
 		},
 
-		key:      key,
-		senderSK: csk,
+		key:   key,
+		encSK: esk,
 	}
 
 	return e, nil
@@ -159,7 +169,7 @@ func (e *Encryptor) AddRecipient(pk *PublicKey) error {
 		return fmt.Errorf("encrypt: can't add new recipient after encryption has started")
 	}
 
-	w, err := wrapKey(pk, e.key, e.senderSK, e.Salt)
+	w, err := e.wrapKey(pk)
 	if err == nil {
 		e.Keys = append(e.Keys, w)
 	}
@@ -241,7 +251,7 @@ func (e *Encryptor) start(wr io.Writer) error {
 
 	// we mix the header checksum to create the encryption key
 	h = sha256.New()
-	h.Write([]byte("Encrypt Nonce"))
+	h.Write([]byte(_EncryptNonce))
 	h.Write(e.key)
 	h.Write(sumHdr)
 	key := h.Sum(nil)
@@ -286,7 +296,7 @@ func fullwrite(buf []byte, wr io.Writer) error {
 // additional data in the AEAD construction.
 func (e *Encryptor) encrypt(buf []byte, wr io.Writer, i uint32, eof bool) error {
 	var b [8]byte
-	var noncebuf [32]byte
+	var nonceb [32]byte
 	var z uint32 = uint32(len(buf))
 
 	// mark last block
@@ -300,7 +310,7 @@ func (e *Encryptor) encrypt(buf []byte, wr io.Writer, i uint32, eof bool) error 
 	h := sha256.New()
 	h.Write(e.Salt)
 	h.Write(b[:])
-	nonce := h.Sum(noncebuf[:0])
+	nonce := h.Sum(nonceb[:0])[:e.ae.NonceSize()]
 
 	copy(e.buf[:4], b[:4])
 	cbuf := e.buf[4:]
@@ -323,6 +333,9 @@ type Decryptor struct {
 	rd     io.Reader
 	buf    []byte
 	hdrsum []byte
+
+	// flag set to true if sender signed the key
+	auth bool
 
 	// Decrypted key
 	key    []byte
@@ -401,7 +414,7 @@ func NewDecryptor(rd io.Reader) (*Decryptor, error) {
 
 	// sanity check on the wrapped keys
 	for i, w := range d.Keys {
-		if len(w.Key) <= 32+12 {
+		if len(w.DKey) <= 32 {
 			return nil, fmt.Errorf("decrypt: wrapped key %d: wrong-size encrypted key", i)
 		}
 	}
@@ -416,7 +429,7 @@ func (d *Decryptor) SetPrivateKey(sk *PrivateKey, senderPk *PublicKey) error {
 	var key []byte
 
 	for i, w := range d.Keys {
-		key, err = unwrapKey(w.Key, sk, d.Pk, d.Salt)
+		key, err = d.unwrapKey(w, sk)
 		if err != nil {
 			return fmt.Errorf("decrypt: can't unwrap key %d: %s", i, err)
 		}
@@ -428,25 +441,15 @@ func (d *Decryptor) SetPrivateKey(sk *PrivateKey, senderPk *PublicKey) error {
 	return fmt.Errorf("decrypt: wrong key")
 
 havekey:
-	if senderPk != nil {
-		hpk, err := d.SenderPk.UnwrapPK(key, d.Salt)
-		if err != nil {
-			return fmt.Errorf("decrypt: can't unwrap sender PK: %s", err)
-		}
-
-		cpk := senderPk.toCurve25519PK()
-		if subtle.ConstantTimeCompare(cpk, hpk) == 0 {
-			return fmt.Errorf("decrypt: sender verification failed")
-		}
+	if err := d.verifySender(key, sk, senderPk); err != nil {
+		return fmt.Errorf("decrypt: %s", err)
 	}
-
-	// XXX do we need to verify d.Header.Sender.Key vs. d.Header.PK?
 
 	d.key = key
 
 	// we mix the header checksum into the key
 	h := sha256.New()
-	h.Write([]byte("Encrypt Nonce"))
+	h.Write([]byte(_EncryptNonce))
 	h.Write(d.key)
 	h.Write(d.hdrsum)
 	key = h.Sum(nil)
@@ -464,72 +467,10 @@ havekey:
 	return nil
 }
 
-// Wrap data encryption key 'k' with the sender's PK and our ephemeral curve SK
-func wrapKey(pk *PublicKey, k, ourSK, salt []byte) (*pb.WrappedKey, error) {
-	shared, err := curve25519.X25519(ourSK, pk.toCurve25519PK())
-	if err != nil {
-		return nil, fmt.Errorf("wrap: %s", err)
-	}
-
-	aes, err := aes.NewCipher(shared)
-	if err != nil {
-		return nil, fmt.Errorf("wrap: %s", err)
-	}
-
-	ae, err := cipher.NewGCM(aes)
-	if err != nil {
-		return nil, fmt.Errorf("wrap: %s", err)
-	}
-
-	tagsize := ae.Overhead()
-
-	nonce := pb.MakeNonce([]byte(pb.WrapReceiverNonce), salt)
-	buf := make([]byte, tagsize+len(shared))
-	out := ae.Seal(buf[:0], nonce[:ae.NonceSize()], k, pk.Pk)
-	return &pb.WrappedKey{
-		Key: out,
-	}, nil
-}
-
-// Unwrap a wrapped key using the receivers Ed25519 secret key 'sk' and
-// senders ephemeral PublicKey
-func unwrapKey(wkey []byte, sk *PrivateKey, curvePK, salt []byte) ([]byte, error) {
-	ourSK := sk.toCurve25519SK()
-	shared, err := curve25519.X25519(ourSK, curvePK)
-	if err != nil {
-		return nil, fmt.Errorf("unwrap: %s", err)
-	}
-
-	aes, err := aes.NewCipher(shared)
-	if err != nil {
-		return nil, fmt.Errorf("unwrap: %s", err)
-	}
-
-	ae, err := cipher.NewGCM(aes)
-	if err != nil {
-		return nil, fmt.Errorf("unwrap: %s", err)
-	}
-
-	want := 32 + ae.Overhead()
-	if len(wkey) != want {
-		return nil, fmt.Errorf("unwrap: incorrect decrypt bytes (need %d, saw %d)", want, len(wkey))
-	}
-
-	nonce := pb.MakeNonce([]byte(pb.WrapReceiverNonce), salt)
-	pk := sk.PublicKey()
-	out := make([]byte, 32)
-	c, err := ae.Open(out[:0], nonce[:ae.NonceSize()], wkey, pk.Pk)
-
-	// we indicate incorrect receiver SK by returning a nil key
-	if err != nil {
-		return nil, nil
-	}
-	return c, nil
-}
-
-// Return a list of Wrapped keys in the encrypted file header
-func (d *Decryptor) WrappedKeys() []*pb.WrappedKey {
-	return d.Keys
+// AuthenticatedSender returns true if the sender authenticated themselves
+// (the data-encryption key is signed).
+func (d *Decryptor) AuthenticatedSender() bool {
+	return d.auth
 }
 
 // Decrypt the file and write to 'wr'
@@ -565,6 +506,143 @@ func (d *Decryptor) Decrypt(wr io.Writer) error {
 		}
 	}
 	return nil
+}
+
+// Wrap sender's signature of the encryption key
+func wrapSenderSig(sig []byte, key, salt []byte) ([]byte, error) {
+	aes, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, fmt.Errorf("wrap: %s", err)
+	}
+
+	ae, err := cipher.NewGCM(aes)
+	if err != nil {
+		return nil, fmt.Errorf("wrap: %s", err)
+	}
+
+	tagsize := ae.Overhead()
+	nonceSize := ae.NonceSize()
+
+	nonce := makeNonce([]byte(_WrapSenderNonce), salt)[:nonceSize]
+	esig := make([]byte, tagsize+len(sig))
+
+	return ae.Seal(esig[:0], nonce, sig, nil), nil
+}
+
+// unwrap sender's signature using 'key' and extract the signature
+// Optionally, verify the signature using the sender's PK (if provided).
+func (d *Decryptor) verifySender(key []byte, sk *PrivateKey, senderPK *PublicKey) error {
+	aes, err := aes.NewCipher(key)
+	if err != nil {
+		return fmt.Errorf("unwrap: %s", err)
+	}
+
+	ae, err := cipher.NewGCM(aes)
+	if err != nil {
+		return fmt.Errorf("unwrap: %s", err)
+	}
+
+	nonceSize := ae.NonceSize()
+	nonce := makeNonce([]byte(_WrapSenderNonce), d.Salt)[:nonceSize]
+	sig := make([]byte, ed25519.SignatureSize)
+	sig, err = ae.Open(sig[:0], nonce, d.SenderSign, nil)
+	if err != nil {
+		return fmt.Errorf("unwrap: can't open sender info: %s", err)
+	}
+
+	var zero [ed25519.SignatureSize]byte
+
+	// Did the sender actually sign anything?
+	if subtle.ConstantTimeCompare(zero[:], sig) == 0 {
+		d.auth = true
+
+		if senderPK != nil {
+			ss := &Signature{
+				Sig: sig,
+			}
+
+			ok := senderPK.VerifyMessage(key, ss)
+			if !ok {
+				return fmt.Errorf("unwrap: sender verification failed")
+			}
+		}
+	}
+	return nil
+}
+
+// Wrap data encryption key 'k' with the sender's PK and our ephemeral curve SK
+//  basically, we do two scalarmults:
+//    a) Ephemeral encryption/decryption SK x receiver PK
+//    b) Sender's  SK x receiver PK
+func (e *Encryptor) wrapKey(pk *PublicKey) (*pb.WrappedKey, error) {
+	rxPK := pk.toCurve25519PK()
+	dkek, err := curve25519.X25519(e.encSK, rxPK)
+	if err != nil {
+		return nil, fmt.Errorf("wrap: %s", err)
+	}
+
+	aes, err := aes.NewCipher(dkek)
+	if err != nil {
+		return nil, fmt.Errorf("wrap: %s", err)
+	}
+
+	ae, err := cipher.NewGCM(aes)
+	if err != nil {
+		return nil, fmt.Errorf("wrap: %s", err)
+	}
+
+	tagsize := ae.Overhead()
+	nonceSize := ae.NonceSize()
+
+	nonceR := makeNonce([]byte(_WrapReceiverNonce), e.Salt)[:nonceSize]
+	ekey := make([]byte, tagsize+len(e.key))
+
+	w := &pb.WrappedKey{
+		DKey: ae.Seal(ekey[:0], nonceR, e.key, pk.Pk),
+	}
+
+	return w, nil
+}
+
+// Unwrap a wrapped key using the receivers Ed25519 secret key 'sk' and
+// senders ephemeral PublicKey
+func (d *Decryptor) unwrapKey(w *pb.WrappedKey, sk *PrivateKey) ([]byte, error) {
+	ourSK := sk.toCurve25519SK()
+	dkek, err := curve25519.X25519(ourSK, d.Pk)
+	if err != nil {
+		return nil, fmt.Errorf("unwrap: %s", err)
+	}
+
+	aes, err := aes.NewCipher(dkek)
+	if err != nil {
+		return nil, fmt.Errorf("unwrap: %s", err)
+	}
+
+	ae, err := cipher.NewGCM(aes)
+	if err != nil {
+		return nil, fmt.Errorf("unwrap: %s", err)
+	}
+
+	// 32 == AES-256 key size
+	want := 32 + ae.Overhead()
+	if len(w.DKey) != want {
+		return nil, fmt.Errorf("unwrap: incorrect decrypt bytes (need %d, saw %d)", want, len(w.DKey))
+	}
+
+	nonceSize := ae.NonceSize()
+
+	nonceR := makeNonce([]byte(_WrapReceiverNonce), d.Salt)[:nonceSize]
+	pk := sk.PublicKey()
+
+	dkey := make([]byte, 32) // decrypted data decryption key
+
+	// we indicate incorrect receiver SK by returning a nil key
+	dkey, err = ae.Open(dkey[:0], nonceR, w.DKey, pk.Pk)
+	if err != nil {
+		return nil, nil
+	}
+
+	return dkey, nil
 }
 
 // Decrypt exactly one chunk of data
@@ -605,7 +683,7 @@ func (d *Decryptor) decrypt(i uint32) ([]byte, bool, error) {
 	h := sha256.New()
 	h.Write(d.Salt)
 	h.Write(b[:])
-	nonce := h.Sum(nonceb[:0])
+	nonce := h.Sum(nonceb[:0])[:d.ae.NonceSize()]
 
 	z := m + ovh
 	n, err = io.ReadFull(d.rd, d.buf[:z])
@@ -632,9 +710,19 @@ func expand(shared, pk []byte) ([]byte, error) {
 func newSender() (sk, pk []byte, err error) {
 	var csk [32]byte
 
-	pb.Randread(csk[:])
-	pb.Clamp(csk[:])
+	randRead(csk[:])
+	clamp(csk[:])
 	pk, err = curve25519.X25519(csk[:], curve25519.Basepoint)
 	sk = csk[:]
 	return
 }
+
+func makeNonce(v ...[]byte) []byte {
+	h := sha256.New()
+	for _, x := range v {
+		h.Write(x)
+	}
+	return h.Sum(nil)[:]
+}
+
+// EOF

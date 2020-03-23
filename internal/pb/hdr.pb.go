@@ -10,7 +10,6 @@
 
 	It has these top-level messages:
 		Header
-		Sender
 		WrappedKey
 */
 package pb
@@ -43,11 +42,11 @@ const _ = proto.GoGoProtoPackageIsVersion2 // please upgrade the proto package
 // decoded version of this information. It is encoded in
 // protobuf format before writing to disk.
 type Header struct {
-	ChunkSize uint32        `protobuf:"varint,1,opt,name=chunk_size,json=chunkSize,proto3" json:"chunk_size,omitempty"`
-	Salt      []byte        `protobuf:"bytes,2,opt,name=salt,proto3" json:"salt,omitempty"`
-	Pk        []byte        `protobuf:"bytes,3,opt,name=pk,proto3" json:"pk,omitempty"`
-	SenderPk  *Sender       `protobuf:"bytes,4,opt,name=sender_pk,json=senderPk" json:"sender_pk,omitempty"`
-	Keys      []*WrappedKey `protobuf:"bytes,5,rep,name=keys" json:"keys,omitempty"`
+	ChunkSize  uint32        `protobuf:"varint,1,opt,name=chunk_size,json=chunkSize,proto3" json:"chunk_size,omitempty"`
+	Salt       []byte        `protobuf:"bytes,2,opt,name=salt,proto3" json:"salt,omitempty"`
+	Pk         []byte        `protobuf:"bytes,3,opt,name=pk,proto3" json:"pk,omitempty"`
+	SenderSign []byte        `protobuf:"bytes,4,opt,name=sender_sign,json=senderSign,proto3" json:"sender_sign,omitempty"`
+	Keys       []*WrappedKey `protobuf:"bytes,5,rep,name=keys" json:"keys,omitempty"`
 }
 
 func (m *Header) Reset()                    { *m = Header{} }
@@ -75,9 +74,9 @@ func (m *Header) GetPk() []byte {
 	return nil
 }
 
-func (m *Header) GetSenderPk() *Sender {
+func (m *Header) GetSenderSign() []byte {
 	if m != nil {
-		return m.SenderPk
+		return m.SenderSign
 	}
 	return nil
 }
@@ -90,43 +89,25 @@ func (m *Header) GetKeys() []*WrappedKey {
 }
 
 //
-// Sender info is wrapped using the data encryption key
-type Sender struct {
-	Pk []byte `protobuf:"bytes,1,opt,name=pk,proto3" json:"pk,omitempty"`
-}
-
-func (m *Sender) Reset()                    { *m = Sender{} }
-func (*Sender) ProtoMessage()               {}
-func (*Sender) Descriptor() ([]byte, []int) { return fileDescriptorHdr, []int{1} }
-
-func (m *Sender) GetPk() []byte {
-	if m != nil {
-		return m.Pk
-	}
-	return nil
-}
-
-//
 // A file encryption key is wrapped by a recipient specific public
 // key. WrappedKey describes such a wrapped key.
 type WrappedKey struct {
-	Key []byte `protobuf:"bytes,2,opt,name=key,proto3" json:"key,omitempty"`
+	DKey []byte `protobuf:"bytes,1,opt,name=d_key,json=dKey,proto3" json:"d_key,omitempty"`
 }
 
 func (m *WrappedKey) Reset()                    { *m = WrappedKey{} }
 func (*WrappedKey) ProtoMessage()               {}
-func (*WrappedKey) Descriptor() ([]byte, []int) { return fileDescriptorHdr, []int{2} }
+func (*WrappedKey) Descriptor() ([]byte, []int) { return fileDescriptorHdr, []int{1} }
 
-func (m *WrappedKey) GetKey() []byte {
+func (m *WrappedKey) GetDKey() []byte {
 	if m != nil {
-		return m.Key
+		return m.DKey
 	}
 	return nil
 }
 
 func init() {
 	proto.RegisterType((*Header)(nil), "pb.header")
-	proto.RegisterType((*Sender)(nil), "pb.sender")
 	proto.RegisterType((*WrappedKey)(nil), "pb.wrapped_key")
 }
 func (this *Header) Equal(that interface{}) bool {
@@ -163,7 +144,7 @@ func (this *Header) Equal(that interface{}) bool {
 	if !bytes.Equal(this.Pk, that1.Pk) {
 		return false
 	}
-	if !this.SenderPk.Equal(that1.SenderPk) {
+	if !bytes.Equal(this.SenderSign, that1.SenderSign) {
 		return false
 	}
 	if len(this.Keys) != len(that1.Keys) {
@@ -173,36 +154,6 @@ func (this *Header) Equal(that interface{}) bool {
 		if !this.Keys[i].Equal(that1.Keys[i]) {
 			return false
 		}
-	}
-	return true
-}
-func (this *Sender) Equal(that interface{}) bool {
-	if that == nil {
-		if this == nil {
-			return true
-		}
-		return false
-	}
-
-	that1, ok := that.(*Sender)
-	if !ok {
-		that2, ok := that.(Sender)
-		if ok {
-			that1 = &that2
-		} else {
-			return false
-		}
-	}
-	if that1 == nil {
-		if this == nil {
-			return true
-		}
-		return false
-	} else if this == nil {
-		return false
-	}
-	if !bytes.Equal(this.Pk, that1.Pk) {
-		return false
 	}
 	return true
 }
@@ -231,7 +182,7 @@ func (this *WrappedKey) Equal(that interface{}) bool {
 	} else if this == nil {
 		return false
 	}
-	if !bytes.Equal(this.Key, that1.Key) {
+	if !bytes.Equal(this.DKey, that1.DKey) {
 		return false
 	}
 	return true
@@ -245,22 +196,10 @@ func (this *Header) GoString() string {
 	s = append(s, "ChunkSize: "+fmt.Sprintf("%#v", this.ChunkSize)+",\n")
 	s = append(s, "Salt: "+fmt.Sprintf("%#v", this.Salt)+",\n")
 	s = append(s, "Pk: "+fmt.Sprintf("%#v", this.Pk)+",\n")
-	if this.SenderPk != nil {
-		s = append(s, "SenderPk: "+fmt.Sprintf("%#v", this.SenderPk)+",\n")
-	}
+	s = append(s, "SenderSign: "+fmt.Sprintf("%#v", this.SenderSign)+",\n")
 	if this.Keys != nil {
 		s = append(s, "Keys: "+fmt.Sprintf("%#v", this.Keys)+",\n")
 	}
-	s = append(s, "}")
-	return strings.Join(s, "")
-}
-func (this *Sender) GoString() string {
-	if this == nil {
-		return "nil"
-	}
-	s := make([]string, 0, 5)
-	s = append(s, "&pb.Sender{")
-	s = append(s, "Pk: "+fmt.Sprintf("%#v", this.Pk)+",\n")
 	s = append(s, "}")
 	return strings.Join(s, "")
 }
@@ -270,7 +209,7 @@ func (this *WrappedKey) GoString() string {
 	}
 	s := make([]string, 0, 5)
 	s = append(s, "&pb.WrappedKey{")
-	s = append(s, "Key: "+fmt.Sprintf("%#v", this.Key)+",\n")
+	s = append(s, "DKey: "+fmt.Sprintf("%#v", this.DKey)+",\n")
 	s = append(s, "}")
 	return strings.Join(s, "")
 }
@@ -314,15 +253,11 @@ func (m *Header) MarshalTo(dAtA []byte) (int, error) {
 		i = encodeVarintHdr(dAtA, i, uint64(len(m.Pk)))
 		i += copy(dAtA[i:], m.Pk)
 	}
-	if m.SenderPk != nil {
+	if len(m.SenderSign) > 0 {
 		dAtA[i] = 0x22
 		i++
-		i = encodeVarintHdr(dAtA, i, uint64(m.SenderPk.Size()))
-		n1, err := m.SenderPk.MarshalTo(dAtA[i:])
-		if err != nil {
-			return 0, err
-		}
-		i += n1
+		i = encodeVarintHdr(dAtA, i, uint64(len(m.SenderSign)))
+		i += copy(dAtA[i:], m.SenderSign)
 	}
 	if len(m.Keys) > 0 {
 		for _, msg := range m.Keys {
@@ -335,30 +270,6 @@ func (m *Header) MarshalTo(dAtA []byte) (int, error) {
 			}
 			i += n
 		}
-	}
-	return i, nil
-}
-
-func (m *Sender) Marshal() (dAtA []byte, err error) {
-	size := m.Size()
-	dAtA = make([]byte, size)
-	n, err := m.MarshalTo(dAtA)
-	if err != nil {
-		return nil, err
-	}
-	return dAtA[:n], nil
-}
-
-func (m *Sender) MarshalTo(dAtA []byte) (int, error) {
-	var i int
-	_ = i
-	var l int
-	_ = l
-	if len(m.Pk) > 0 {
-		dAtA[i] = 0xa
-		i++
-		i = encodeVarintHdr(dAtA, i, uint64(len(m.Pk)))
-		i += copy(dAtA[i:], m.Pk)
 	}
 	return i, nil
 }
@@ -378,11 +289,11 @@ func (m *WrappedKey) MarshalTo(dAtA []byte) (int, error) {
 	_ = i
 	var l int
 	_ = l
-	if len(m.Key) > 0 {
-		dAtA[i] = 0x12
+	if len(m.DKey) > 0 {
+		dAtA[i] = 0xa
 		i++
-		i = encodeVarintHdr(dAtA, i, uint64(len(m.Key)))
-		i += copy(dAtA[i:], m.Key)
+		i = encodeVarintHdr(dAtA, i, uint64(len(m.DKey)))
+		i += copy(dAtA[i:], m.DKey)
 	}
 	return i, nil
 }
@@ -428,8 +339,8 @@ func (m *Header) Size() (n int) {
 	if l > 0 {
 		n += 1 + l + sovHdr(uint64(l))
 	}
-	if m.SenderPk != nil {
-		l = m.SenderPk.Size()
+	l = len(m.SenderSign)
+	if l > 0 {
 		n += 1 + l + sovHdr(uint64(l))
 	}
 	if len(m.Keys) > 0 {
@@ -441,20 +352,10 @@ func (m *Header) Size() (n int) {
 	return n
 }
 
-func (m *Sender) Size() (n int) {
-	var l int
-	_ = l
-	l = len(m.Pk)
-	if l > 0 {
-		n += 1 + l + sovHdr(uint64(l))
-	}
-	return n
-}
-
 func (m *WrappedKey) Size() (n int) {
 	var l int
 	_ = l
-	l = len(m.Key)
+	l = len(m.DKey)
 	if l > 0 {
 		n += 1 + l + sovHdr(uint64(l))
 	}
@@ -482,18 +383,8 @@ func (this *Header) String() string {
 		`ChunkSize:` + fmt.Sprintf("%v", this.ChunkSize) + `,`,
 		`Salt:` + fmt.Sprintf("%v", this.Salt) + `,`,
 		`Pk:` + fmt.Sprintf("%v", this.Pk) + `,`,
-		`SenderPk:` + strings.Replace(fmt.Sprintf("%v", this.SenderPk), "Sender", "Sender", 1) + `,`,
+		`SenderSign:` + fmt.Sprintf("%v", this.SenderSign) + `,`,
 		`Keys:` + strings.Replace(fmt.Sprintf("%v", this.Keys), "WrappedKey", "WrappedKey", 1) + `,`,
-		`}`,
-	}, "")
-	return s
-}
-func (this *Sender) String() string {
-	if this == nil {
-		return "nil"
-	}
-	s := strings.Join([]string{`&Sender{`,
-		`Pk:` + fmt.Sprintf("%v", this.Pk) + `,`,
 		`}`,
 	}, "")
 	return s
@@ -503,7 +394,7 @@ func (this *WrappedKey) String() string {
 		return "nil"
 	}
 	s := strings.Join([]string{`&WrappedKey{`,
-		`Key:` + fmt.Sprintf("%v", this.Key) + `,`,
+		`DKey:` + fmt.Sprintf("%v", this.DKey) + `,`,
 		`}`,
 	}, "")
 	return s
@@ -628,9 +519,9 @@ func (m *Header) Unmarshal(dAtA []byte) error {
 			iNdEx = postIndex
 		case 4:
 			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field SenderPk", wireType)
+				return fmt.Errorf("proto: wrong wireType = %d for field SenderSign", wireType)
 			}
-			var msglen int
+			var byteLen int
 			for shift := uint(0); ; shift += 7 {
 				if shift >= 64 {
 					return ErrIntOverflowHdr
@@ -640,23 +531,21 @@ func (m *Header) Unmarshal(dAtA []byte) error {
 				}
 				b := dAtA[iNdEx]
 				iNdEx++
-				msglen |= (int(b) & 0x7F) << shift
+				byteLen |= (int(b) & 0x7F) << shift
 				if b < 0x80 {
 					break
 				}
 			}
-			if msglen < 0 {
+			if byteLen < 0 {
 				return ErrInvalidLengthHdr
 			}
-			postIndex := iNdEx + msglen
+			postIndex := iNdEx + byteLen
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			if m.SenderPk == nil {
-				m.SenderPk = &Sender{}
-			}
-			if err := m.SenderPk.Unmarshal(dAtA[iNdEx:postIndex]); err != nil {
-				return err
+			m.SenderSign = append(m.SenderSign[:0], dAtA[iNdEx:postIndex]...)
+			if m.SenderSign == nil {
+				m.SenderSign = []byte{}
 			}
 			iNdEx = postIndex
 		case 5:
@@ -711,87 +600,6 @@ func (m *Header) Unmarshal(dAtA []byte) error {
 	}
 	return nil
 }
-func (m *Sender) Unmarshal(dAtA []byte) error {
-	l := len(dAtA)
-	iNdEx := 0
-	for iNdEx < l {
-		preIndex := iNdEx
-		var wire uint64
-		for shift := uint(0); ; shift += 7 {
-			if shift >= 64 {
-				return ErrIntOverflowHdr
-			}
-			if iNdEx >= l {
-				return io.ErrUnexpectedEOF
-			}
-			b := dAtA[iNdEx]
-			iNdEx++
-			wire |= (uint64(b) & 0x7F) << shift
-			if b < 0x80 {
-				break
-			}
-		}
-		fieldNum := int32(wire >> 3)
-		wireType := int(wire & 0x7)
-		if wireType == 4 {
-			return fmt.Errorf("proto: sender: wiretype end group for non-group")
-		}
-		if fieldNum <= 0 {
-			return fmt.Errorf("proto: sender: illegal tag %d (wire type %d)", fieldNum, wire)
-		}
-		switch fieldNum {
-		case 1:
-			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field Pk", wireType)
-			}
-			var byteLen int
-			for shift := uint(0); ; shift += 7 {
-				if shift >= 64 {
-					return ErrIntOverflowHdr
-				}
-				if iNdEx >= l {
-					return io.ErrUnexpectedEOF
-				}
-				b := dAtA[iNdEx]
-				iNdEx++
-				byteLen |= (int(b) & 0x7F) << shift
-				if b < 0x80 {
-					break
-				}
-			}
-			if byteLen < 0 {
-				return ErrInvalidLengthHdr
-			}
-			postIndex := iNdEx + byteLen
-			if postIndex > l {
-				return io.ErrUnexpectedEOF
-			}
-			m.Pk = append(m.Pk[:0], dAtA[iNdEx:postIndex]...)
-			if m.Pk == nil {
-				m.Pk = []byte{}
-			}
-			iNdEx = postIndex
-		default:
-			iNdEx = preIndex
-			skippy, err := skipHdr(dAtA[iNdEx:])
-			if err != nil {
-				return err
-			}
-			if skippy < 0 {
-				return ErrInvalidLengthHdr
-			}
-			if (iNdEx + skippy) > l {
-				return io.ErrUnexpectedEOF
-			}
-			iNdEx += skippy
-		}
-	}
-
-	if iNdEx > l {
-		return io.ErrUnexpectedEOF
-	}
-	return nil
-}
 func (m *WrappedKey) Unmarshal(dAtA []byte) error {
 	l := len(dAtA)
 	iNdEx := 0
@@ -821,9 +629,9 @@ func (m *WrappedKey) Unmarshal(dAtA []byte) error {
 			return fmt.Errorf("proto: wrapped_key: illegal tag %d (wire type %d)", fieldNum, wire)
 		}
 		switch fieldNum {
-		case 2:
+		case 1:
 			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field Key", wireType)
+				return fmt.Errorf("proto: wrong wireType = %d for field DKey", wireType)
 			}
 			var byteLen int
 			for shift := uint(0); ; shift += 7 {
@@ -847,9 +655,9 @@ func (m *WrappedKey) Unmarshal(dAtA []byte) error {
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			m.Key = append(m.Key[:0], dAtA[iNdEx:postIndex]...)
-			if m.Key == nil {
-				m.Key = []byte{}
+			m.DKey = append(m.DKey[:0], dAtA[iNdEx:postIndex]...)
+			if m.DKey == nil {
+				m.DKey = []byte{}
 			}
 			iNdEx = postIndex
 		default:
@@ -981,22 +789,21 @@ var (
 func init() { proto.RegisterFile("internal/pb/hdr.proto", fileDescriptorHdr) }
 
 var fileDescriptorHdr = []byte{
-	// 265 bytes of a gzipped FileDescriptorProto
-	0x1f, 0x8b, 0x08, 0x00, 0x00, 0x09, 0x6e, 0x88, 0x02, 0xff, 0x4c, 0x90, 0x4f, 0x4a, 0xc3, 0x50,
-	0x10, 0xc6, 0x33, 0x69, 0x0d, 0x76, 0xe2, 0x3f, 0x1e, 0x08, 0x6f, 0xe3, 0x18, 0xe2, 0xc2, 0x2c,
-	0x24, 0x85, 0x7a, 0x03, 0x4f, 0x20, 0xf1, 0x00, 0x21, 0x31, 0x03, 0x09, 0xaf, 0xa4, 0x8f, 0x97,
-	0x88, 0xa4, 0x2b, 0x8f, 0xe0, 0xd6, 0x1b, 0x78, 0x14, 0x97, 0x5d, 0xba, 0x34, 0xcf, 0x8d, 0xcb,
-	0x1e, 0x41, 0x9a, 0x54, 0x70, 0x35, 0x1f, 0xbf, 0xf9, 0x86, 0x6f, 0xf8, 0xf0, 0xbc, 0xaa, 0x5b,
-	0x36, 0x75, 0xb6, 0x9c, 0xeb, 0x7c, 0x5e, 0x16, 0x26, 0xd6, 0x66, 0xd5, 0xae, 0x84, 0xab, 0xf3,
-	0xf0, 0x0d, 0xd0, 0x2b, 0x39, 0x2b, 0xd8, 0x88, 0x0b, 0xc4, 0xc7, 0xf2, 0xa9, 0x56, 0x69, 0x53,
-	0xad, 0x59, 0x42, 0x00, 0xd1, 0x71, 0x32, 0x1b, 0xc8, 0x43, 0xb5, 0x66, 0x21, 0x70, 0xda, 0x64,
-	0xcb, 0x56, 0xba, 0x01, 0x44, 0x47, 0xc9, 0xa0, 0xc5, 0x09, 0xba, 0x5a, 0xc9, 0xc9, 0x40, 0x5c,
-	0xad, 0xc4, 0x35, 0xce, 0x1a, 0xae, 0x0b, 0x36, 0xa9, 0x56, 0x72, 0x1a, 0x40, 0xe4, 0x2f, 0x30,
-	0xd6, 0x79, 0x3c, 0xc2, 0xe4, 0x70, 0x9c, 0xf7, 0x4a, 0x5c, 0xe1, 0x54, 0x71, 0xd7, 0xc8, 0x83,
-	0x60, 0x12, 0xf9, 0x8b, 0xd3, 0x9d, 0xe7, 0xd9, 0x64, 0x5a, 0x73, 0x91, 0x2a, 0xee, 0x92, 0x61,
-	0x19, 0x4a, 0xf4, 0xc6, 0x83, 0x7d, 0x0e, 0xfc, 0xe5, 0x84, 0x97, 0xe8, 0xff, 0xb3, 0x8b, 0x33,
-	0x9c, 0x28, 0xee, 0xf6, 0x9f, 0xed, 0xe4, 0xdd, 0xcd, 0xa6, 0x27, 0xe7, 0xb3, 0x27, 0x67, 0xdb,
-	0x13, 0xbc, 0x58, 0x82, 0x77, 0x4b, 0xf0, 0x61, 0x09, 0x36, 0x96, 0xe0, 0xcb, 0x12, 0xfc, 0x58,
-	0x72, 0xb6, 0x96, 0xe0, 0xf5, 0x9b, 0x9c, 0xdc, 0x1b, 0xfa, 0xb8, 0xfd, 0x0d, 0x00, 0x00, 0xff,
-	0xff, 0x7f, 0xa8, 0x12, 0x55, 0x28, 0x01, 0x00, 0x00,
+	// 252 bytes of a gzipped FileDescriptorProto
+	0x1f, 0x8b, 0x08, 0x00, 0x00, 0x09, 0x6e, 0x88, 0x02, 0xff, 0x4c, 0xcf, 0x31, 0x4e, 0xeb, 0x40,
+	0x10, 0xc6, 0x71, 0x8f, 0xe3, 0x44, 0x7a, 0xe3, 0x3c, 0x90, 0x16, 0x21, 0xb9, 0x61, 0xb0, 0x4c,
+	0xe3, 0x02, 0x39, 0x12, 0xdc, 0x80, 0x96, 0xce, 0x39, 0x80, 0x65, 0xe3, 0x51, 0x6c, 0x6d, 0xb4,
+	0x59, 0xed, 0x1a, 0x21, 0xa7, 0xe2, 0x08, 0x70, 0x0b, 0x8e, 0x42, 0x99, 0x92, 0x12, 0x2f, 0x0d,
+	0x65, 0x8e, 0x80, 0xb4, 0x34, 0x74, 0x9f, 0x7e, 0xff, 0x66, 0x06, 0xcf, 0x7b, 0x35, 0xb0, 0x51,
+	0xf5, 0x76, 0xa5, 0x9b, 0x55, 0xd7, 0x9a, 0x42, 0x9b, 0xdd, 0xb0, 0x13, 0xa1, 0x6e, 0xb2, 0x57,
+	0xc0, 0x45, 0xc7, 0x75, 0xcb, 0x46, 0x5c, 0x20, 0x3e, 0x74, 0x8f, 0x4a, 0x56, 0xb6, 0xdf, 0x73,
+	0x02, 0x29, 0xe4, 0xff, 0xcb, 0x7f, 0x5e, 0xd6, 0xfd, 0x9e, 0x85, 0xc0, 0xc8, 0xd6, 0xdb, 0x21,
+	0x09, 0x53, 0xc8, 0x97, 0xa5, 0xdf, 0xe2, 0x04, 0x43, 0x2d, 0x93, 0x99, 0x97, 0x50, 0x4b, 0x71,
+	0x89, 0xb1, 0x65, 0xd5, 0xb2, 0xa9, 0x6c, 0xbf, 0x51, 0x49, 0xe4, 0x03, 0xfe, 0xd2, 0xba, 0xdf,
+	0x28, 0x71, 0x85, 0x91, 0xe4, 0xd1, 0x26, 0xf3, 0x74, 0x96, 0xc7, 0x37, 0xa7, 0x85, 0x6e, 0x8a,
+	0x27, 0x53, 0x6b, 0xcd, 0x6d, 0x25, 0x79, 0x2c, 0x7d, 0xcc, 0x32, 0x8c, 0xff, 0xa0, 0x38, 0xc3,
+	0xb9, 0x1f, 0xfe, 0xa4, 0x65, 0x19, 0xb5, 0xf7, 0x3c, 0xde, 0x5d, 0x1f, 0x26, 0x0a, 0x3e, 0x26,
+	0x0a, 0x8e, 0x13, 0xc1, 0xb3, 0x23, 0x78, 0x73, 0x04, 0xef, 0x8e, 0xe0, 0xe0, 0x08, 0x3e, 0x1d,
+	0xc1, 0xb7, 0xa3, 0xe0, 0xe8, 0x08, 0x5e, 0xbe, 0x28, 0x68, 0x16, 0xfe, 0xe1, 0xdb, 0x9f, 0x00,
+	0x00, 0x00, 0xff, 0xff, 0x88, 0x3d, 0x22, 0x56, 0x09, 0x01, 0x00, 0x00,
 }
