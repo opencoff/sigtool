@@ -295,7 +295,6 @@ func fullwrite(buf []byte, wr io.Writer) error {
 // modification attacks. The encoded length & block number is used as
 // additional data in the AEAD construction.
 func (e *Encryptor) encrypt(buf []byte, wr io.Writer, i uint32, eof bool) error {
-	var b [8]byte
 	var nonceb [32]byte
 	var z uint32 = uint32(len(buf))
 
@@ -304,6 +303,7 @@ func (e *Encryptor) encrypt(buf []byte, wr io.Writer, i uint32, eof bool) error 
 		z |= _EOF
 	}
 
+	b := e.buf[:8]
 	binary.BigEndian.PutUint32(b[:4], z)
 	binary.BigEndian.PutUint32(b[4:], i)
 
@@ -312,7 +312,6 @@ func (e *Encryptor) encrypt(buf []byte, wr io.Writer, i uint32, eof bool) error 
 	h.Write(b[:])
 	nonce := h.Sum(nonceb[:0])[:e.ae.NonceSize()]
 
-	copy(e.buf[:4], b[:4])
 	cbuf := e.buf[4:]
 	c := e.ae.Seal(cbuf[:0], nonce, buf, b[:])
 
