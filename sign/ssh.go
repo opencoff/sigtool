@@ -25,24 +25,12 @@ import (
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/pem"
-	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/dchest/bcrypt_pbkdf"
 	"golang.org/x/crypto/ed25519"
 	"golang.org/x/crypto/ssh"
-)
-
-var (
-	ErrIncorrectPassword = errors.New("ssh: Invalid Passphrase")
-	ErrNoPEMFound        = errors.New("no PEM block found")
-	ErrBadPublicKey      = errors.New("ssh: malformed public key")
-	ErrKeyTooShort       = errors.New("ssh: public key too short")
-	ErrBadTrailers       = errors.New("ssh: trailing junk in public key")
-	ErrBadFormat         = errors.New("ssh: invalid openssh private key format")
-	ErrBadLength         = errors.New("ssh: private key unexpected length")
-	ErrBadPadding        = errors.New("ssh: padding not as expected")
 )
 
 const keySizeAES256 = 32

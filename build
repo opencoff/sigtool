@@ -27,13 +27,11 @@ PWD=`pwd`
 
 Static=0
 Dryrun=0
-Prodver=0.1
+Prodver=""
 Verbose=0
 
 hostos=$(go env GOHOSTOS)       || exit 1
 hostcpu=$(go env GOHOSTARCH)    || exit 1
-
-[ -f ./version ] && Prodver=$(cat ./version)
 
 die() {
     echo "$Z: $@" 1>&2
@@ -102,7 +100,8 @@ And, PROGS is one or more go programs.
 
 With no arguments, $0 builds: $Progs (source in ./src/)
 
-If ./version is present, its content are used as version number for the binary.
+The repository's latest tag is used as the default version of the software being
+built.
 
 Options:
     -h, --help          Show this help message and quit
@@ -153,6 +152,7 @@ done
 Tool=
 doinit=0
 args=
+Printarch=0
 
 #set -x
 ac_prev=
@@ -214,6 +214,10 @@ do
             set -x
             ;;
 
+        --print-arch)
+            Printarch=1
+            ;;
+
         *) # first non option terminates option processing.
            # we gather all remaining args and bundle them up.
             args="$args $ac_option"
@@ -228,7 +232,7 @@ done
 [ $Dryrun  -gt 0 ] && e=echo
 
 # let every error abort
-#set -e
+set -e
 
 # This fragment can't be in a function - since it exports several vars
 if [ -n "$Arch" ]; then
@@ -274,6 +278,12 @@ else
     fi
 fi
 
+if [ $Printarch -gt 0 ]; then
+    echo "$hostos-$hostcpu"
+    exit 0
+fi
+
+
 # This is where build outputs go
 Bindir=$PWD/bin/$cross
 Hostbindir=$PWD/bin/$hostos-$hostcpu
@@ -290,13 +300,20 @@ if [ -d "./.hg" ]; then
     else
         rev="hg:${brev}"
     fi
+    if [ -z "$Prodver" ]; then
+        Prodver=$(hg log -r "branch(stable) and tag()" -T "{tags}\n" | tail -1)
+    fi
 elif [ -d "./.git" ]; then
     xrev=$(git describe --always --dirty --long --abbrev=12) || exit 1
     rev="git:$xrev"
+    if [ -z "$Prodver" ]; then
+        Prodver=$(git tag --list | tail -1)
+    fi
 else
     rev="UNKNOWN-VER"
     echo "$0: Can't find version info" 1>&2
 fi
+
 
 # Do Protobufs if needed
 if [ -n "$Protobufs" ]; then
@@ -304,7 +321,7 @@ if [ -n "$Protobufs" ]; then
     slicksrc=github.com/gogo/protobuf/protoc-gen-gogoslick
     pc=$(type -p protoc)
 
-    [ -z "$pc" ] && die "Please install protobuf-tools .."
+    [ -z "$pc" ] && die "Need 'protoc' for building .."
 
     slick=$(hosttool protoc-gen-gogoslick $Hostbindir $slicksrc) || exit 1
     #if [ ! -f $slick ]; then
@@ -312,17 +329,15 @@ if [ -n "$Protobufs" ]; then
     #   $e go build -o $slick github.com/gogo/protobuf/protoc-gen-gogoslick || exit 1
     #i
 
-    PATH=$Hostbindir:$PATH
-    export PATH
+    export PATH=$PATH:$Hostbindir
 
     for f in $Protobufs; do
         dn=$(dirname $f)
         bn=$(basename $f .proto)
         of=$dn/${bn}.pb.go
         if [ $f -nt $of ]; then
-            echo "gogoslick: $f -> $of ..."
+            echo "Running $pc .."
             $e $pc --gogoslick_out=. $f || exit 1
-            $e gofmt -w $of
         fi
     done
 fi
@@ -354,7 +369,7 @@ case $Tool in
             all="$@"
         fi
 
-        echo "Building $msg $Prodver ($rev) for $cross .."
+        echo "Building $Prodver ($rev), $cross $msg .."
 
         for p in $all; do 
             if echo $p | grep -q ':' ; then

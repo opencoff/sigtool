@@ -15,8 +15,6 @@
 package sign
 
 import (
-	"errors"
-	"fmt"
 	"io"
 )
 
@@ -98,7 +96,7 @@ func (w *encWriter) Close() error {
 	}
 
 	w.n = 0
-	w.err = errClosed
+	w.err = ErrClosed
 	return w.wr.Close()
 }
 
@@ -113,7 +111,7 @@ type encReader struct {
 // NewStreamReader returns an io.Reader to read from the decrypted stream
 func (d *Decryptor) NewStreamReader() (io.Reader, error) {
 	if d.key == nil {
-		return nil, fmt.Errorf("streamReader: wrapped-key not decrypted (missing SetPrivateKey()?")
+		return nil, ErrNoKey
 	}
 
 	if d.eof {
@@ -158,7 +156,3 @@ func (r *encReader) Read(b []byte) (int, error) {
 
 	return n, nil
 }
-
-var (
-	errClosed = errors.New("encrypt: stream already closed")
-)
