@@ -1,6 +1,6 @@
 module github.com/opencoff/sigtool
 
-go 1.13
+go 1.17
 
 require (
 	github.com/dchest/bcrypt_pbkdf v0.0.0-20150205184540-83f37f9c154a
@@ -10,3 +10,5 @@ require (
 	golang.org/x/crypto v0.0.0-20200622213623-75b288015ac9
 	gopkg.in/yaml.v2 v2.2.7
 )
+
+require golang.org/x/sys v0.0.0-20200930185726-fdedc70b468f // indirect

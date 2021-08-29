@@ -696,10 +696,11 @@ func fullwrite(buf []byte, wr io.Writer) error {
 }
 
 // make aead nonce from salt, chunk-size and block#
+// First 8 bytes are chunk-size and nonce (in 'ad')
 func makeNonceV2(dest []byte, salt []byte, ad []byte) []byte {
 	n := len(ad)
-	copy(dest, salt[:n])
-	copy(dest[n:], ad)
+	copy(dest, ad)
+	copy(dest[n:], salt)
 	return dest
 }
 
