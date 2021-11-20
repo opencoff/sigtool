@@ -26,6 +26,7 @@ import (
 	"encoding/binary"
 	"encoding/pem"
 	"fmt"
+	"regexp"
 	"strings"
 
 	"github.com/dchest/bcrypt_pbkdf"
@@ -56,12 +57,13 @@ func parseSSHPrivateKey(data []byte, getpw func() ([]byte, error)) (*PrivateKey,
 }
 
 func parseSSHPublicKey(in []byte) (*PublicKey, error) {
-	v := bytes.Split(in, []byte(" \t"))
+	splitter := regexp.MustCompile("[ \\t]+");
+	v := splitter.Split(string(in), -1);
 	if len(v) != 3 {
 		return nil, ErrBadPublicKey
 	}
 
-	return parseEncPubKey(v[1], string(v[2]))
+	return parseEncPubKey([]byte(v[1]), v[2])
 }
 
 // parse a wire encoded public key
