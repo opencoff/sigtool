@@ -113,6 +113,7 @@ Options:
     -v, --verbose       Build verbosely (adds "-v" to go tooling) [False]
     --vet               Run "go vet" on modules named on the command line [False]
     -x                  Run in debug/trace mode [False]
+    --print-arch        Print the target architecture and exit
 EOF
 
     exit 0

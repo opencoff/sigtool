@@ -129,22 +129,7 @@ func NewEncryptor(sk *PrivateKey, blksize uint64) (*Encryptor, error) {
 	randRead(key)
 	randRead(salt)
 
-	// if sender has provided their identity to authenticate, we sign the data-enc key
-	// and encrypt the signature. At no point will we send the sender's identity.
-	var senderSig []byte
-	if sk != nil {
-		sig, err := sk.SignMessage(key, "")
-		if err != nil {
-			return nil, fmt.Errorf("encrypt: can't sign: %w", err)
-		}
-
-		senderSig = sig.Sig
-	} else {
-		var zero [ed25519.SignatureSize]byte
-		senderSig = zero[:]
-	}
-
-	wSig, err := wrapSenderSig(senderSig, key, salt)
+	wSig, err := wrapSenderSig(sk, key, salt)
 	if err != nil {
 		return nil, fmt.Errorf("encrypt: %w", err)
 	}
@@ -543,7 +528,25 @@ func (d *Decryptor) decrypt(i uint32) ([]byte, bool, error) {
 }
 
 // Wrap sender's signature of the encryption key
-func wrapSenderSig(sig []byte, key, salt []byte) ([]byte, error) {
+// if sender has provided their identity to authenticate, we sign the data-enc key
+// and encrypt the signature. At no point will we send the sender's identity.
+func wrapSenderSig(sk *PrivateKey, key, salt []byte) ([]byte, error) {
+	var zero [ed25519.SignatureSize]byte
+	var sig []byte
+
+	switch {
+	case sk == nil:
+		sig = zero[:]
+
+	default:
+		xsig, err := sk.SignMessage(key, "")
+		if err != nil {
+			return nil, fmt.Errorf("wrap: can't sign: %w", err)
+		}
+
+		sig = xsig.Sig
+	}
+
 	aes, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, fmt.Errorf("wrap: %w", err)
@@ -588,6 +591,7 @@ func (d *Decryptor) verifySender(key []byte, sk *PrivateKey, senderPK *PublicKey
 
 	// Did the sender actually sign anything?
 	if subtle.ConstantTimeCompare(zero[:], sig) == 0 {
+		// we set this to indicate that the sender authenticated themselves;
 		d.auth = true
 
 		if senderPK != nil {
@@ -595,8 +599,7 @@ func (d *Decryptor) verifySender(key []byte, sk *PrivateKey, senderPK *PublicKey
 				Sig: sig,
 			}
 
-			ok := senderPK.VerifyMessage(key, ss)
-			if !ok {
+			if ok := senderPK.VerifyMessage(key, ss); !ok {
 				return fmt.Errorf("unwrap: sender verification failed")
 			}
 		}
@@ -605,9 +608,7 @@ func (d *Decryptor) verifySender(key []byte, sk *PrivateKey, senderPK *PublicKey
 }
 
 // Wrap data encryption key 'k' with the sender's PK and our ephemeral curve SK
-//  basically, we do two scalarmults:
-//    a) Ephemeral encryption/decryption SK x receiver PK
-//    b) Sender's  SK x receiver PK
+//  basically, we do a scalarmult: Ephemeral encryption/decryption SK x receiver PK
 func (e *Encryptor) wrapKey(pk *PublicKey) (*pb.WrappedKey, error) {
 	rxPK := pk.toCurve25519PK()
 	dkek, err := curve25519.X25519(e.encSK, rxPK)
