@@ -76,6 +76,57 @@ func TestEncryptSimple(t *testing.T) {
 	assert(byteEq(b, buf), "decrypt content mismatch")
 }
 
+// one sender, one receiver - small blocks
+func TestEncryptSmallSizes(t *testing.T) {
+	assert := newAsserter(t)
+
+	receiver, err := NewKeypair()
+	assert(err == nil, "receiver keypair gen failed: %s", err)
+
+	var blkSize int = 8
+	var size int = (blkSize * 4)
+
+	// cleartext
+	bigbuf := make([]byte, size)
+	for i := 0; i < len(bigbuf); i++ {
+		bigbuf[i] = byte(i & 0xff)
+	}
+
+	// encrypt progressively larger bufs
+	for i := 1; i < len(bigbuf); i++ {
+		buf := bigbuf[:i]
+
+		ee, err := NewEncryptor(nil, uint64(blkSize))
+		assert(err == nil, "encryptor-%d create fail: %s", i, err)
+
+		err = ee.AddRecipient(&receiver.Pub)
+		assert(err == nil, "encryptor-%d: can't add recipient: %s", i, err)
+
+		rd := bytes.NewBuffer(buf)
+		wr := Buffer{}
+
+		err = ee.Encrypt(rd, &wr)
+		assert(err == nil, "encrypt-%d fail: %s", i, err)
+
+		rd = bytes.NewBuffer(wr.Bytes())
+
+		dd, err := NewDecryptor(rd)
+		assert(err == nil, "decryptor-%d create fail: %s", i, err)
+
+		err = dd.SetPrivateKey(&receiver.Sec, nil)
+		assert(err == nil, "decryptor-%d can't add SK: %s", i, err)
+
+		wr = Buffer{}
+		err = dd.Decrypt(&wr)
+		assert(err == nil, "decrypt-%d fail: %s", i, err)
+
+		b := wr.Bytes()
+		assert(len(b) == len(buf), "decrypt-%d length mismatch: exp %d, saw %d", i, len(buf), len(b))
+
+		assert(byteEq(b, buf), "decrypt-%d content mismatch", i)
+	}
+}
+
 // test corrupted header or corrupted input
 func TestEncryptCorrupted(t *testing.T) {
 	assert := newAsserter(t)
@@ -310,6 +361,93 @@ func TestStreamIO(t *testing.T) {
 	assert(n == len(buf), "streamread: decrypt len mismatch; exp %d, saw %d", len(buf), n)
 
 	assert(byteEq(b, buf), "decrypt content mismatch")
+
+}
+
+// Test stream write and read with small sizes
+func TestSmallSizeStreamIO(t *testing.T) {
+	assert := newAsserter(t)
+
+	receiver, err := NewKeypair()
+	assert(err == nil, "receiver keypair gen failed: %s", err)
+
+	var blkSize int = 8
+	var size int = blkSize * 10
+
+	// cleartext
+	bigbuf := make([]byte, size)
+	for i := 0; i < len(bigbuf); i++ {
+		bigbuf[i] = byte(i & 0xff)
+	}
+
+	for i := 1; i < len(bigbuf); i++ {
+		buf := bigbuf[:i]
+		t.Logf("small-size-stream: size %d, chunksize %d\n", i, blkSize)
+
+		ee, err := NewEncryptor(nil, uint64(blkSize))
+		assert(err == nil, "encryptor create fail: %s", err)
+
+		err = ee.AddRecipient(&receiver.Pub)
+		assert(err == nil, "can't add recipient: %s", err)
+
+		wr := Buffer{}
+		wio, err := ee.NewStreamWriter(&wr)
+		assert(err == nil, "can't start stream writer: %s", err)
+
+		// chunksize for writing to stream
+		csize := blkSize - 1
+		rbuf := buf
+		for len(rbuf) > 0 {
+			m := csize
+			if len(rbuf) < m {
+				m = len(rbuf)
+			}
+
+			n, err := wio.Write(rbuf[:m])
+			assert(err == nil, "stream write failed: %s", err)
+			assert(n == m, "stream write mismatch: exp %d, saw %d", m, n)
+
+			rbuf = rbuf[m:]
+		}
+		err = wio.Close()
+		assert(err == nil, "stream close failed: %s", err)
+
+		_, err = wio.Write(buf[:csize])
+		assert(err != nil, "stream write accepted I/O after close: %s", err)
+
+		rd := bytes.NewBuffer(wr.Bytes())
+
+		dd, err := NewDecryptor(rd)
+		assert(err == nil, "decryptor create fail: %s", err)
+
+		err = dd.SetPrivateKey(&receiver.Sec, nil)
+		assert(err == nil, "decryptor can't add SK: %s", err)
+
+		rio, err := dd.NewStreamReader()
+		assert(err == nil, "stream reader failed: %s", err)
+
+		rbuf = make([]byte, csize)
+		wr = Buffer{}
+		n := 0
+		for {
+			m, err := rio.Read(rbuf)
+			assert(err == nil || err == io.EOF, "streamread fail: %s", err)
+
+			if m > 0 {
+				wr.Write(rbuf[:m])
+				n += m
+			}
+			if err == io.EOF || m == 0 {
+				break
+			}
+		}
+
+		b := wr.Bytes()
+		assert(n == len(b), "streamread: bad buflen; exp %d, saw %d", n, len(b))
+		assert(n == len(buf), "streamread: decrypt len mismatch; exp %d, saw %d", len(buf), n)
+
+		assert(byteEq(b, buf), "decrypt content mismatch")
+	}
 
 }
 

@@ -260,7 +260,7 @@ func (e *Encryptor) start(wr io.Writer) error {
 }
 
 // encrypt exactly _one_ block of data
-// The nonce for the block is: sha256(salt || chunkLen || block#)
+// The nonce is constructed from the salt, block# and block-size.
 // This protects the output stream from re-ordering attacks and length
 // modification attacks. The encoded length & block number is used as
 // additional data in the AEAD construction.
@@ -473,7 +473,6 @@ func (d *Decryptor) Decrypt(wr io.Writer) error {
 			return nil
 		}
 	}
-	return nil
 }
 
 // Decrypt exactly one chunk of data
@@ -490,7 +489,6 @@ func (d *Decryptor) decrypt(i uint32) ([]byte, bool, error) {
 
 	m := binary.BigEndian.Uint32(b[:4])
 	eof := (m & _EOF) > 0
-
 	m &= (_EOF - 1)
 
 	// Sanity check - in case of corrupt header
@@ -503,9 +501,6 @@ func (d *Decryptor) decrypt(i uint32) ([]byte, bool, error) {
 			return nil, false, fmt.Errorf("decrypt: block %d: zero-sized chunk without EOF", i)
 		}
 		return p, eof, nil
-
-	case m < ovh:
-		return nil, false, fmt.Errorf("decrypt: chunksize is too small (%d)", m)
 
 	default:
 	}

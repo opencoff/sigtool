@@ -57,8 +57,8 @@ func parseSSHPrivateKey(data []byte, getpw func() ([]byte, error)) (*PrivateKey,
 }
 
 func parseSSHPublicKey(in []byte) (*PublicKey, error) {
-	splitter := regexp.MustCompile("[ \\t]+");
-	v := splitter.Split(string(in), -1);
+	splitter := regexp.MustCompile("[ \\t]+")
+	v := splitter.Split(string(in), -1)
 	if len(v) != 3 {
 		return nil, ErrBadPublicKey
 	}

@@ -29,6 +29,8 @@ type encWriter struct {
 	err error
 }
 
+var _ io.WriteCloser = &encWriter{}
+
 // NewStreamWriter begins stream encryption to an underlying destination writer 'wr'.
 // It returns an io.WriteCloser.
 func (e *Encryptor) NewStreamWriter(wr io.WriteCloser) (io.WriteCloser, error) {
@@ -107,6 +109,8 @@ type encReader struct {
 	d      *Decryptor
 	blk    uint32
 }
+
+var _ io.Reader = &encReader{}
 
 // NewStreamReader returns an io.Reader to read from the decrypted stream
 func (d *Decryptor) NewStreamReader() (io.Reader, error) {
