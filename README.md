@@ -26,7 +26,19 @@ The sign, verify, encrypt, decrypt operations can use OpenSSH Ed25519 keys
 files to any recipient identified by their comment in `~/.ssh/authorized_keys`.
 
 ## How do I build it?
-With Go 1.13 and later:
+You need two things:
+
+1. Protobuf compiler:
+
+   On Debian based systems: `apt install protobuf-compiler`
+
+   Consult your OS's package manager to install protobuf tools;
+   these are typically named 'protobuf' or 'protoc'.
+
+2. go 1.13+ toolchain
+
+
+Next, build sigtool:
 
     git clone https://github.com/opencoff/sigtool
     cd sigtool
