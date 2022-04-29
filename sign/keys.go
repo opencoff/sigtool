@@ -28,7 +28,6 @@ import (
 	"encoding/binary"
 	"fmt"
 	"hash"
-	"io"
 	"io/ioutil"
 	"math/big"
 	"os"
@@ -64,15 +63,10 @@ type PublicKey struct {
 	hash []byte
 }
 
-// Ed25519 key pair
-type Keypair struct {
-	Sec PrivateKey
-	Pub PublicKey
-}
-
 // Length of Ed25519 Public Key Hash
 const PKHashLength = 16
 
+// constants we use in this module
 const (
 	// Scrypt parameters
 	_N int = 1 << 19
@@ -118,55 +112,27 @@ type signature struct {
 	Signature string `yaml:"signature"`
 }
 
+// given a public key, generate a deterministic short-hash of it.
 func pkhash(pk []byte) []byte {
 	z := sha256.Sum256(pk)
 	return z[:PKHashLength]
 }
 
-// Generate a new Ed25519 keypair
-func NewKeypair() (*Keypair, error) {
-	//kp := &Keypair{Sec: PrivateKey{N: 1 << 17, r: 64, p: 1}}
-	kp := &Keypair{}
-	sk := &kp.Sec
-	pk := &kp.Pub
-	sk.pk = pk
-
-	p, s, err := Ed.GenerateKey(rand.Reader)
+// NewPrivateKey generates a new Ed25519 private key
+func NewPrivateKey() (*PrivateKey, error) {
+	pkb, skb, err := Ed.GenerateKey(rand.Reader)
 	if err != nil {
-		return nil, fmt.Errorf("Can't generate Ed25519 keys: %s", err)
+		return nil, err
 	}
 
-	pk.Pk = []byte(p)
-	sk.Sk = []byte(s)
-	pk.hash = pkhash(pk.Pk)
-
-	return kp, nil
-}
-
-// Serialize the keypair to two separate files. The basename of the
-// file is 'bn'; the public key goes in $bn.pub and the private key
-// goes in $bn.key.
-// If password is non-empty, then the private key is encrypted
-// before writing to disk.
-func (kp *Keypair) Serialize(bn, comment string, getpw func() ([]byte, error)) error {
-
-	sk := &kp.Sec
-	pk := &kp.Pub
-
-	skf := fmt.Sprintf("%s.key", bn)
-	pkf := fmt.Sprintf("%s.pub", bn)
-
-	err := pk.serialize(pkf, comment)
-	if err != nil {
-		return fmt.Errorf("Can't serialize to %s: %s", pkf, err)
+	sk := &PrivateKey{
+		Sk: []byte(skb),
+		pk: &PublicKey{
+			Pk:   []byte(pkb),
+			hash: pkhash([]byte(pkb)),
+		},
 	}
-
-	err = sk.serialize(skf, comment, getpw)
-	if err != nil {
-		return fmt.Errorf("Can't serialize to %s: %s", pkf, err)
-	}
-
-	return nil
+	return sk, nil
 }
 
 // Read the private key in 'fn', optionally decrypting it using
@@ -177,73 +143,30 @@ func ReadPrivateKey(fn string, getpw func() ([]byte, error)) (*PrivateKey, error
 		return nil, err
 	}
 
-	if bytes.Index(yml, []byte("OPENSSH PRIVATE KEY-")) > 0 {
-		return parseSSHPrivateKey(yml, getpw)
+	var sk PrivateKey
+	if err = sk.UnmarshalBinary(yml, getpw); err != nil {
+		return nil, err
 	}
-
-	if pw, err := getpw(); err == nil {
-		return MakePrivateKey(yml, pw)
-	}
-	return nil, err
+	return &sk, nil
 }
 
-// Make a private key from bytes 'yml' and password 'pw'. The bytes
+// Make a private key from bytes 'yml' using optional caller provided
+// getpw() function to read the password if needed.
 // are assumed to be serialized version of the private key.
-func MakePrivateKey(yml []byte, pw []byte) (*PrivateKey, error) {
-	var ssk serializedPrivKey
+func MakePrivateKey(yml []byte, getpw func() ([]byte, error)) (*PrivateKey, error) {
+	var sk PrivateKey
 
-	err := yaml.Unmarshal(yml, &ssk)
+	err := sk.UnmarshalBinary(yml, getpw)
 	if err != nil {
-		return nil, fmt.Errorf("make priv key: can't parse YAML: %s", err)
+		return nil, err
 	}
-
-	if len(ssk.Salt) == 0 || len(ssk.Esk) == 0 {
-		return nil, fmt.Errorf("sign: not YAML private key")
-	}
-
-	b64 := base64.StdEncoding.DecodeString
-
-	salt, err := b64(ssk.Salt)
-	if err != nil {
-		return nil, fmt.Errorf("make priv key: can't decode salt: %s", err)
-	}
-
-	esk, err := b64(ssk.Esk)
-	if err != nil {
-		return nil, fmt.Errorf("make priv key: can't decode key: %s", err)
-	}
-
-	// We take short passwords and extend them
-	pwb := sha512.Sum512(pw)
-
-	// "32" == Length of AES-256 key
-	key, err := scrypt.Key(pwb[:], salt, ssk.N, ssk.R, ssk.P, 32)
-	if err != nil {
-		return nil, fmt.Errorf("make priv key: can't derive key: %s", err)
-	}
-
-	aes, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, fmt.Errorf("make priv key: aes failure: %s", err)
-	}
-
-	ae, err := cipher.NewGCM(aes)
-	if err != nil {
-		return nil, fmt.Errorf("make priv key: aes failure: %s", err)
-	}
-
-	skb, err := ae.Open(nil, salt[:ae.NonceSize()], esk, nil)
-	if err != nil {
-		return nil, fmt.Errorf("make priv key: wrong password")
-	}
-
-	return PrivateKeyFromBytes(skb)
+	return &sk, nil
 }
 
-// Make a private key from 64-bytes of extended Ed25519 key
-func PrivateKeyFromBytes(buf []byte) (*PrivateKey, error) {
+// make a PrivateKey from a byte array containing ed25519 raw SK
+func makePrivateKeyFromBytes(sk *PrivateKey, buf []byte) error {
 	if len(buf) != 64 {
-		return nil, fmt.Errorf("private key is malformed (len %d!)", len(buf))
+		return fmt.Errorf("private key is malformed (len %d!)", len(buf))
 	}
 
 	skb := make([]byte, 64)
@@ -256,13 +179,19 @@ func PrivateKeyFromBytes(buf []byte) (*PrivateKey, error) {
 		Pk:   []byte(edpk),
 		hash: pkhash([]byte(edpk)),
 	}
-	sk := &PrivateKey{
-		Sk: skb,
-		pk: pk,
-	}
-
-	return sk, nil
+	sk.Sk = skb
+	sk.pk = pk
+	return nil
 }
+
+/*
+// Make a private key from 64-bytes of extended Ed25519 key
+func PrivateKeyFromBytes(buf []byte) (*PrivateKey, error) {
+	var sk PrivateKey
+
+	return makePrivateKeyFromBytes(&sk, buf)
+}
+*/
 
 // Given a secret key, return the corresponding Public Key
 func (sk *PrivateKey) PublicKey() *PublicKey {
@@ -270,7 +199,7 @@ func (sk *PrivateKey) PublicKey() *PublicKey {
 }
 
 // Convert an Ed25519 Private Key to Curve25519 Private key
-func (sk *PrivateKey) toCurve25519SK() []byte {
+func (sk *PrivateKey) ToCurve25519SK() []byte {
 	if sk.ck == nil {
 		var ek [64]byte
 
@@ -284,12 +213,205 @@ func (sk *PrivateKey) toCurve25519SK() []byte {
 	return sk.ck
 }
 
+// Serialize the private key to file 'fn' using human readable
+// 'comment' and encrypt the key with supplied passphrase 'pw'.
+func (sk *PrivateKey) Serialize(fn, comment string, ovwrite bool, pw []byte) error {
+	b, err := sk.MarshalBinary(comment, pw)
+	if err == nil {
+		return writeFile(fn, b, ovwrite, 0600)
+	}
+	return err
+}
+
+// MarshalBinary marshals the private key with a caller provided
+// passphrase 'pw' and human readable 'comment'
+func (sk *PrivateKey) MarshalBinary(comment string, pw []byte) ([]byte, error) {
+	// expand the password into 64 bytes
+	pass := sha512.Sum512(pw)
+	salt := make([]byte, 32)
+
+	randRead(salt)
+
+	// "32" == Length of AES-256 key
+	key, err := scrypt.Key(pass[:], salt, _N, _r, _p, 32)
+	if err != nil {
+		return nil, fmt.Errorf("marshal: can't derive scrypt key: %s", err)
+	}
+
+	aes, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, fmt.Errorf("marshal: %s", err)
+	}
+
+	ae, err := cipher.NewGCM(aes)
+	if err != nil {
+		return nil, fmt.Errorf("marshal: %s", err)
+	}
+
+	tl := ae.Overhead()
+	buf := make([]byte, tl+len(sk.Sk))
+	esk := ae.Seal(buf[:0], salt[:ae.NonceSize()], sk.Sk, nil)
+
+	enc := base64.StdEncoding.EncodeToString
+
+	ssk := serializedPrivKey{
+		Comment: comment,
+		Esk:     enc(esk),
+		Salt:    enc(salt),
+		Algo:    sk_algo,
+		N:       _N,
+		R:       _r,
+		P:       _p,
+	}
+
+	// We won't protect the Scrypt parameters with the hash above
+	// because it is not needed. If the parameters are wrong, the
+	// derived key will be wrong and thus, the hash will not match.
+
+	return yaml.Marshal(&ssk)
+}
+
+// UnmarshalBinary unmarshals the private key and optionally invokes the
+// caller provided getpw() function to read the password if needed. If the
+// input byte stream 'b' is an OpenSSH ed25519 key, this function transparently
+// decodes it.
+func (sk *PrivateKey) UnmarshalBinary(b []byte, getpw func() ([]byte, error)) error {
+	if bytes.Index(b, []byte("OPENSSH PRIVATE KEY-")) > 0 {
+		xk, err := parseSSHPrivateKey(b, getpw)
+		if err != nil {
+			return err
+		}
+		*sk = *xk
+		return nil
+	}
+
+	var pw []byte
+	if getpw != nil {
+		var err error
+		pw, err = getpw()
+		if err != nil {
+			return err
+		}
+	}
+
+	// We take short passwords and extend them
+	pwb := sha512.Sum512(pw)
+
+	var ssk serializedPrivKey
+
+	err := yaml.Unmarshal(b, &ssk)
+	if err != nil {
+		return fmt.Errorf("unmarshal priv key: can't parse YAML: %s", err)
+	}
+
+	if len(ssk.Salt) == 0 || len(ssk.Esk) == 0 {
+		return fmt.Errorf("unmarshal priv key: not YAML format")
+	}
+
+	b64 := base64.StdEncoding.DecodeString
+
+	salt, err := b64(ssk.Salt)
+	if err != nil {
+		return fmt.Errorf("unmarshal priv key: can't decode salt: %s", err)
+	}
+
+	esk, err := b64(ssk.Esk)
+	if err != nil {
+		return fmt.Errorf("unmarshal priv key: can't decode key: %s", err)
+	}
+
+	// "32" == Length of AES-256 key
+	key, err := scrypt.Key(pwb[:], salt, ssk.N, ssk.R, ssk.P, 32)
+	if err != nil {
+		return fmt.Errorf("unmarshal priv key: can't derive key: %s", err)
+	}
+
+	aes, err := aes.NewCipher(key)
+	if err != nil {
+		return fmt.Errorf("unmarshal priv key: aes failure: %s", err)
+	}
+
+	ae, err := cipher.NewGCM(aes)
+	if err != nil {
+		return fmt.Errorf("unmarshal priv key: aes failure: %s", err)
+	}
+
+	skb := make([]byte, 64)
+	skb, err = ae.Open(skb[:0], salt[:ae.NonceSize()], esk, nil)
+	if err != nil {
+		return fmt.Errorf("unmarshal priv key: wrong password")
+	}
+
+	return makePrivateKeyFromBytes(sk, skb)
+}
+
+//  --- Public Key Methods ---
+
+// Read the public key from 'fn' and create new instance of
+// PublicKey
+func ReadPublicKey(fn string) (*PublicKey, error) {
+	var err error
+	var yml []byte
+
+	if yml, err = ioutil.ReadFile(fn); err != nil {
+		return nil, err
+	}
+
+	var pk PublicKey
+	if err = pk.UnmarshalBinary(yml); err != nil {
+		return nil, err
+	}
+	return &pk, nil
+}
+
+// Parse a serialized public in 'yml' and return the resulting
+// public key instance
+func MakePublicKey(yml []byte) (*PublicKey, error) {
+	var pk PublicKey
+	if err := pk.UnmarshalBinary(yml); err != nil {
+		return nil, err
+	}
+	return &pk, nil
+}
+
+func makePublicKeyFromBytes(pk *PublicKey, b []byte) error {
+	if len(b) != 32 {
+		return fmt.Errorf("public key is malformed (len %d!)", len(b))
+	}
+
+	pk.Pk = make([]byte, 32)
+	pk.hash = pkhash(b)
+	copy(pk.Pk, b)
+
+	return nil
+}
+
+/*
+// Make a public key from a byte string
+func PublicKeyFromBytes(b []byte) (*PublicKey, error) {
+	var pk PublicKey
+
+	makePublicKeyFromBytes(&pk, b)
+}
+*/
+
+// Serialize a PublicKey into file 'fn' with a human readable 'comment'.
+// If 'ovwrite' is true, overwrite the file if it exists.
+func (pk *PublicKey) Serialize(fn, comment string, ovwrite bool) error {
+	out, err := pk.MarshalBinary(comment)
+	if err == nil {
+		return writeFile(fn, out, ovwrite, 0644)
+	}
+
+	return err
+}
+
 // from github.com/FiloSottile/age
 var curve25519P, _ = new(big.Int).SetString("57896044618658097711785492504343953926634992332820282019728792003956564819949", 10)
 
 // Convert an Ed25519 Public Key to Curve25519 public key
 // from github.com/FiloSottile/age
-func (pk *PublicKey) toCurve25519PK() []byte {
+func (pk *PublicKey) ToCurve25519PK() []byte {
 	if pk.ck != nil {
 		return pk.ck
 	}
@@ -329,131 +451,8 @@ func (pk *PublicKey) Hash() []byte {
 	return pk.hash
 }
 
-// Serialize the private key to a file
-// AEAD encryption for protecting the private key
-// Format: YAML
-// All []byte are in base64 (RawEncoding)
-func (sk *PrivateKey) serialize(fn, comment string, getpw func() ([]byte, error)) error {
-	pw, err := getpw()
-	if err != nil {
-		return err
-	}
-
-	// expand the password into 64 bytes
-	pass := sha512.Sum512(pw)
-	salt := make([]byte, 32)
-
-	randRead(salt)
-
-	// "32" == Length of AES-256 key
-	key, err := scrypt.Key(pass[:], salt, _N, _r, _p, 32)
-	if err != nil {
-		return fmt.Errorf("marshal: can't derive scrypt key: %s", err)
-	}
-
-	aes, err := aes.NewCipher(key)
-	if err != nil {
-		return fmt.Errorf("marshal: %s", err)
-	}
-
-	ae, err := cipher.NewGCM(aes)
-	if err != nil {
-		return fmt.Errorf("marshal: %s", err)
-	}
-
-	tl := ae.Overhead()
-	buf := make([]byte, tl+len(sk.Sk))
-	esk := ae.Seal(buf[:0], salt[:ae.NonceSize()], sk.Sk, nil)
-
-	enc := base64.StdEncoding.EncodeToString
-
-	ssk := serializedPrivKey{
-		Comment: comment,
-		Esk:     enc(esk),
-		Salt:    enc(salt),
-		Algo:    sk_algo,
-		N:       _N,
-		R:       _r,
-		P:       _p,
-	}
-
-	// We won't protect the Scrypt parameters with the hash above
-	// because it is not needed. If the parameters are wrong, the
-	// derived key will be wrong and thus, the hash will not match.
-
-	out, err := yaml.Marshal(&ssk)
-	if err != nil {
-		return fmt.Errorf("can't marahal to YAML: %s", err)
-	}
-
-	return writeFile(fn, out, 0600)
-}
-
-//  --- Public Key Methods ---
-
-// Read the public key from 'fn' and create new instance of
-// PublicKey
-func ReadPublicKey(fn string) (*PublicKey, error) {
-	var err error
-	var yml []byte
-
-	if yml, err = ioutil.ReadFile(fn); err != nil {
-		return nil, err
-	}
-
-	// first try to parse as a ssh key
-	pk, err := parseSSHPublicKey(yml)
-	if err != nil {
-		pk, err = MakePublicKey(yml)
-	}
-	return pk, err
-}
-
-// Parse a serialized public in 'yml' and return the resulting
-// public key instance
-func MakePublicKey(yml []byte) (*PublicKey, error) {
-	var spk serializedPubKey
-	var err error
-
-	if err = yaml.Unmarshal(yml, &spk); err != nil {
-		return nil, fmt.Errorf("can't parse YAML: %s", err)
-	}
-
-	if len(spk.Pk) == 0 {
-		return nil, fmt.Errorf("sign: not a YAML public key")
-	}
-
-	b64 := base64.StdEncoding.DecodeString
-	var pkb []byte
-
-	if pkb, err = b64(spk.Pk); err != nil {
-		return nil, fmt.Errorf("can't decode YAML:Pk: %s", err)
-	}
-
-	if pk, err := PublicKeyFromBytes(pkb); err == nil {
-		pk.Comment = spk.Comment
-		return pk, nil
-	}
-	return nil, err
-}
-
-// Make a public key from a byte string
-func PublicKeyFromBytes(b []byte) (*PublicKey, error) {
-	if len(b) != 32 {
-		return nil, fmt.Errorf("public key is malformed (len %d!)", len(b))
-	}
-
-	pk := &PublicKey{
-		Pk:   make([]byte, 32),
-		hash: pkhash(b),
-	}
-
-	copy(pk.Pk, b)
-	return pk, nil
-}
-
-// Serialize Public Keys
-func (pk *PublicKey) serialize(fn, comment string) error {
+// MarshalBinary marshals a PublicKey into a byte array
+func (pk *PublicKey) MarshalBinary(comment string) ([]byte, error) {
 	b64 := base64.StdEncoding.EncodeToString
 	spk := &serializedPubKey{
 		Comment: comment,
@@ -461,57 +460,61 @@ func (pk *PublicKey) serialize(fn, comment string) error {
 		Hash:    b64(pk.hash),
 	}
 
-	out, err := yaml.Marshal(spk)
-	if err != nil {
-		return fmt.Errorf("can't marahal to YAML: %s", err)
+	return yaml.Marshal(spk)
+}
+
+// UnmarshalBinary constructs a PublicKey from a previously
+// marshaled byte stream instance. In addition, it is also
+// capable of parsing an OpenSSH ed25519 public key.
+func (pk *PublicKey) UnmarshalBinary(yml []byte) error {
+
+	// first try to parse as a ssh key
+	if xk, err := parseSSHPublicKey(yml); err == nil {
+		*pk = *xk
+		return nil
 	}
 
-	return writeFile(fn, out, 0644)
+	// OK Yaml it is.
+
+	var spk serializedPubKey
+	var err error
+
+	if err = yaml.Unmarshal(yml, &spk); err != nil {
+		return fmt.Errorf("can't parse YAML: %s", err)
+	}
+
+	if len(spk.Pk) == 0 {
+		return fmt.Errorf("sign: not a YAML public key")
+	}
+
+	b64 := base64.StdEncoding.DecodeString
+	var pkb []byte
+
+	if pkb, err = b64(spk.Pk); err != nil {
+		return fmt.Errorf("can't decode YAML:Pk: %s", err)
+	}
+
+	return makePublicKeyFromBytes(pk, pkb)
 }
 
 // -- Internal Utility Functions --
 
-// Unlink a file.
-func unlink(f string) {
-	st, err := os.Stat(f)
-	if err == nil {
-		if !st.Mode().IsRegular() {
-			panic(fmt.Sprintf("%s can't be unlinked. Not a regular file?", f))
-		}
-
-		os.Remove(f)
-		return
-	}
-}
-
 // Simple function to reliably write data to a file.
 // Does MORE than ioutil.WriteFile() - in that it doesn't trash the
 // existing file with an incomplete write.
-func writeFile(fn string, b []byte, mode uint32) error {
-	tmp := fmt.Sprintf("%s.tmp", fn)
-	unlink(tmp)
-
-	fd, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, os.FileMode(mode))
+func writeFile(fn string, b []byte, ovwrite bool, mode uint32) error {
+	sf, err := NewSafeFile(fn, ovwrite, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, os.FileMode(mode))
 	if err != nil {
-		return fmt.Errorf("Can't create file %s: %s", tmp, err)
+		return err
 	}
+	defer sf.Abort() // always cleanup on error
 
-	_, err = fd.Write(b)
-	if err != nil {
-		fd.Close()
-		// XXX Do we delete the tmp file?
-		return fmt.Errorf("Can't write %v bytes to %s: %s", len(b), tmp, err)
-	}
-
-	fd.Close() // we ignore close(2) errors; unrecoverable anyway.
-
-	os.Rename(tmp, fn)
-	return nil
+	sf.Write(b)
+	return sf.Close()
 }
 
 // Generate file checksum out of hash function h
 func fileCksum(fn string, h hash.Hash) ([]byte, error) {
-
 	fd, err := os.Open(fn)
 	if err != nil {
 		return nil, fmt.Errorf("can't open %s: %s", fn, err)
@@ -528,7 +531,7 @@ func fileCksum(fn string, h hash.Hash) ([]byte, error) {
 	binary.BigEndian.PutUint64(b[:], uint64(sz))
 	h.Write(b[:])
 
-	return h.Sum(nil), nil
+	return h.Sum(nil)[:], nil
 }
 
 func clamp(k []byte) []byte {
@@ -536,14 +539,6 @@ func clamp(k []byte) []byte {
 	k[31] &= 127
 	k[31] |= 64
 	return k
-}
-
-func randRead(b []byte) []byte {
-	_, err := io.ReadFull(rand.Reader, b)
-	if err != nil {
-		panic(fmt.Sprintf("can't read %d bytes of random data: %s", len(b), err))
-	}
-	return b
 }
 
 // EOF

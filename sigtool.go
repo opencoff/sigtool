@@ -96,7 +96,7 @@ func gen(args []string) {
 	fs.BoolVarP(&nopw, "no-password", "", false, "Don't ask for a password for the private key")
 	fs.StringVarP(&comment, "comment", "c", "", "Use `C` as the text comment for the keys")
 	fs.StringVarP(&envpw, "env-password", "E", "", "Use passphrase from environment variable `E`")
-	fs.BoolVarP(&force, "force", "F", false, "Overwrite the output file if it exists")
+	fs.BoolVarP(&force, "overwrite", "", false, "Overwrite the output file if it exists")
 
 	fs.Parse(args)
 
@@ -120,22 +120,19 @@ Options:
 
 	bn := args[0]
 
-	if exists(bn) && !force {
-		die("Public/Private key files (%s.key, %s.pub) exist. Won't overwrite!", bn, bn)
+	pkn := fmt.Sprintf("%s.pub", path.Clean(bn))
+	skn := fmt.Sprintf("%s.key", path.Clean(bn))
+
+	if !force {
+		if exists(pkn) || exists(skn) {
+			die("Public/Private key files (%s, %s) exist. won't overwrite!", skn, pkn)
+		}
 	}
 
 	var err error
+	var pw []byte
 
-	kp, err := sign.NewKeypair()
-	if err != nil {
-		die("%s", err)
-	}
-
-	err = kp.Serialize(bn, comment, func() ([]byte, error) {
-		if nopw {
-			return nil, nil
-		}
-
+	if !nopw {
 		var pws string
 		if len(envpw) > 0 {
 			pws = os.Getenv(envpw)
@@ -145,16 +142,28 @@ Options:
 				die("%s", err)
 			}
 		}
-		return []byte(pws), nil
-	})
+
+		pw = []byte(pws)
+	}
+
+	sk, err := sign.NewPrivateKey()
 	if err != nil {
+		die("%s", err)
+	}
+
+	if err = sk.Serialize(skn, comment, force, pw); err != nil {
+		die("%s", err)
+	}
+
+	pk := sk.PublicKey()
+	if err = pk.Serialize(pkn, comment, force); err != nil {
 		die("%s", err)
 	}
 }
 
 // Run the 'sign' command.
 func signify(args []string) {
-	var nopw, help bool
+	var nopw, help, force bool
 	var output string
 	var envpw string
 
@@ -163,6 +172,7 @@ func signify(args []string) {
 	fs.BoolVarP(&nopw, "no-password", "", false, "Don't ask for a password for the private key")
 	fs.StringVarP(&envpw, "env-password", "E", "", "Use passphrase from environment variable `E`")
 	fs.StringVarP(&output, "output", "o", "", "Write signature to file `F`")
+	fs.BoolVarP(&force, "overwrite", "", false, "Overwrite previous signature file if it exists")
 
 	fs.Parse(args)
 
@@ -193,6 +203,19 @@ Options:
 		outf = output
 	}
 
+	var fd io.WriteCloser = os.Stdout
+
+	if outf != "-" {
+		sf, err := sign.NewSafeFile(outf, force, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
+		if err != nil {
+			die("can't create sig file: %s", err)
+		}
+
+		// we unlink and remove temp on any error
+		defer sf.Abort()
+		fd = sf
+	}
+
 	sk, err := sign.ReadPrivateKey(kn, func() ([]byte, error) {
 		if nopw {
 			return nil, nil
@@ -219,20 +242,9 @@ Options:
 		die("%s", err)
 	}
 
-	sigo, err := sig.Serialize(fmt.Sprintf("input=%s", fn))
-
-	var fd io.Writer = os.Stdout
-
-	if outf != "-" {
-		fdx, err := os.OpenFile(outf, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
-		if err != nil {
-			die("can't create output file %s: %s", outf, err)
-		}
-		defer fdx.Close()
-		fd = fdx
-	}
-
-	fd.Write(sigo)
+	sigbytes, err := sig.MarshalBinary(fmt.Sprintf("input=%s", fn))
+	fd.Write(sigbytes)
+	fd.Close()
 }
 
 // Verify signature on a given file
@@ -323,14 +335,8 @@ Commands:
 }
 
 // Return true if $bn.key or $bn.pub exist; false otherwise
-func exists(bn string) bool {
-	pk := bn + ".pub"
-	sk := bn + ".key"
-
-	if _, err := os.Stat(pk); err == nil {
-		return true
-	}
-	if _, err := os.Stat(sk); err == nil {
+func exists(nm string) bool {
+	if _, err := os.Stat(nm); err == nil {
 		return true
 	}
 

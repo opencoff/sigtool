@@ -605,7 +605,7 @@ func (d *Decryptor) verifySender(key []byte, sk *PrivateKey, senderPK *PublicKey
 // Wrap data encryption key 'k' with the sender's PK and our ephemeral curve SK
 //  basically, we do a scalarmult: Ephemeral encryption/decryption SK x receiver PK
 func (e *Encryptor) wrapKey(pk *PublicKey) (*pb.WrappedKey, error) {
-	rxPK := pk.toCurve25519PK()
+	rxPK := pk.ToCurve25519PK()
 	dkek, err := curve25519.X25519(e.encSK, rxPK)
 	if err != nil {
 		return nil, fmt.Errorf("wrap: %w", err)
@@ -637,7 +637,7 @@ func (e *Encryptor) wrapKey(pk *PublicKey) (*pb.WrappedKey, error) {
 // Unwrap a wrapped key using the receivers Ed25519 secret key 'sk' and
 // senders ephemeral PublicKey
 func (d *Decryptor) unwrapKey(w *pb.WrappedKey, sk *PrivateKey) ([]byte, error) {
-	ourSK := sk.toCurve25519SK()
+	ourSK := sk.ToCurve25519SK()
 	dkek, err := curve25519.X25519(ourSK, d.Pk)
 	if err != nil {
 		return nil, fmt.Errorf("unwrap: %w", err)

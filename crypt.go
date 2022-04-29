@@ -36,14 +36,15 @@ func encrypt(args []string) {
 	var outfile string
 	var keyfile string
 	var envpw string
-	var nopw bool
+	var nopw, force bool
 	var blksize uint64
 
 	fs.StringVarP(&outfile, "outfile", "o", "", "Write the output to file `F`")
 	fs.StringVarP(&keyfile, "sign", "s", "", "Sign using private key `S`")
 	fs.BoolVarP(&nopw, "no-password", "", false, "Don't ask for passphrase to decrypt the private key")
-	fs.StringVarP(&envpw, "env-password", "", "", "Use passphrase from environment variable `E`")
+	fs.StringVarP(&envpw, "env-password", "E", "", "Use passphrase from environment variable `E`")
 	fs.SizeVarP(&blksize, "block-size", "B", 128*1024, "Use `S` as the encryption block size")
+	fs.BoolVarP(&force, "overwrite", "", false, "Overwrite the output file if it exists")
 
 	err := fs.Parse(args)
 	if err != nil {
@@ -114,26 +115,32 @@ func encrypt(args []string) {
 	}
 
 	if len(outfile) > 0 && outfile != "-" {
+		var mode os.FileMode = 0600 // conservative output mode
+
 		if inf != nil {
-			ost, err := os.Stat(outfile)
-			if err != nil {
+			var err error
+			var ist, ost os.FileInfo
+
+			if ost, err = os.Stat(outfile); err != nil {
 				die("can't stat %s: %s", outfile, err)
 			}
 
-			ist, err := inf.Stat()
-			if err != nil {
+			if ist, err = inf.Stat(); err != nil {
 				die("can't stat %s: %s", infile, err)
 			}
 
 			if os.SameFile(ist, ost) {
 				die("won't create output file: same as input file!")
 			}
+			mode = ist.Mode()
 		}
 
-		outf := mustOpen(outfile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC)
-		defer outf.Close()
-
-		outfd = outf
+		sf, err := sign.NewSafeFile(outfile, force, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
+		if err != nil {
+			die("%s", err)
+		}
+		defer sf.Abort()
+		outfd = sf
 	}
 
 	en, err := sign.NewEncryptor(sk, blksize)
@@ -178,6 +185,7 @@ func encrypt(args []string) {
 	if err != nil {
 		die("%s", err)
 	}
+	outfd.Close()
 }
 
 type nullWriter struct{}
@@ -202,13 +210,14 @@ func decrypt(args []string) {
 	var envpw string
 	var outfile string
 	var pubkey string
-	var nopw, test bool
+	var nopw, test, force bool
 
 	fs.StringVarP(&outfile, "outfile", "o", "", "Write the output to file `F`")
 	fs.BoolVarP(&nopw, "no-password", "", false, "Don't ask for passphrase to decrypt the private key")
-	fs.StringVarP(&envpw, "env-password", "", "", "Use passphrase from environment variable `E`")
+	fs.StringVarP(&envpw, "env-password", "E", "", "Use passphrase from environment variable `E`")
 	fs.StringVarP(&pubkey, "verify-sender", "v", "", "Verify that the sender matches public key in `F`")
 	fs.BoolVarP(&test, "test", "t", false, "Test the encrypted file against the given key without writing to output")
+	fs.BoolVarP(&force, "overwrite", "", false, "Overwrite the output file if it exists")
 
 	err := fs.Parse(args)
 	if err != nil {
@@ -221,7 +230,7 @@ func decrypt(args []string) {
 	}
 
 	var infd io.Reader = os.Stdin
-	var outfd io.Writer = os.Stdout
+	var outfd io.WriteCloser = os.Stdout
 	var inf *os.File
 	var infile string
 
@@ -268,24 +277,30 @@ func decrypt(args []string) {
 	if test {
 		outfd = &nullWriter{}
 	} else if len(outfile) > 0 && outfile != "-" {
+		var mode os.FileMode = 0600 // conservative mode
+
 		if inf != nil {
-			ost, err := os.Stat(outfile)
-			if err != nil {
+			var ist, ost os.FileInfo
+			var err error
+
+			if ost, err = os.Stat(outfile); err != nil {
 				die("can't stat %s: %s", outfile, err)
 			}
-			ist, err := inf.Stat()
-			if err != nil {
+			if ist, err = inf.Stat(); err != nil {
 				die("can't stat %s: %s", infile, err)
 			}
 			if os.SameFile(ist, ost) {
 				die("won't create output file: same as input file!")
 			}
+			mode = ist.Mode()
 		}
 
-		outf := mustOpen(outfile, os.O_WRONLY|os.O_CREATE|os.O_TRUNC)
-		defer outf.Close()
-
-		outfd = outf
+		sf, err := sign.NewSafeFile(outfile, force, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
+		if err != nil {
+			die("%s", err)
+		}
+		defer sf.Abort()
+		outfd = sf
 	}
 
 	d, err := sign.NewDecryptor(infd)
@@ -306,14 +321,16 @@ func decrypt(args []string) {
 		warn("%s: Missing sender Public Key; can't authenticate sender ..", fn)
 	}
 
-	err = d.Decrypt(outfd)
-	if err != nil {
+	if err = d.Decrypt(outfd); err != nil {
 		die("%s", err)
 	}
+
+	outfd.Close()
 
 	if test {
 		warn("Enc file OK")
 	}
+
 }
 
 func encryptUsage(fs *flag.FlagSet) {

@@ -233,8 +233,8 @@ decryption.
 
 ### How is the private key protected?
 The Ed25519 private key is encrypted in AES-GCM-256 mode using a key
-derived from the user's pass-phrase. The user pass phrase is expanded via 
-SHA256; this expanded pass phrase is fed to `scrypt()` to 
+derived from the user's pass-phrase. The user pass phrase is expanded via
+SHA256; this expanded pass phrase is fed to `scrypt()` to
 generate a key-encryption-key.  In pseudo code, this operation looks
 like below:
 
@@ -263,6 +263,9 @@ etc.
 * `src/ssh.go`     contains code to parse SSH Ed25519 key files
 * `src/stream.go`  contains code that provides an `io.Reader` and `io.WriteCloser` interface
                    for encryption and decryption.
+* `tests.sh`       simple round trip test using the tool; this is in addition to the tests in
+                   `sign/`.
+
 
 The generated keys and signatures are proper YAML files and human
 readable.
@@ -274,6 +277,11 @@ where there are lots of keys).
 Signatures on large files are calculated efficiently by reading them
 in memory mapped mode (```mmap(2)```) and hashing the file contents
 using SHA-512. The Ed25519 signature is calculated on the file-hash.
+
+### Tests
+The core library in `sign/` has extensive tests to verify signing and encryption.
+Additionally, a simple shell script `tests.sh` does a full roundtrip of tests
+using `sigtool`.
 
 ## Example of Keys, Signature
 

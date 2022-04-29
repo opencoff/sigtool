@@ -38,16 +38,20 @@ func tempdir(t *testing.T) string {
 	return tmp
 }
 
+var fixedPw = []byte("abc")
+var badPw = []byte("def")
+var nilPw []byte
+
 // return a hardcoded password
 func hardcodedPw() ([]byte, error) {
-	return []byte("abc"), nil
+	return fixedPw, nil
 }
 
 func wrongPw() ([]byte, error) {
-	return []byte("xyz"), nil
+	return badPw, nil
 }
 func emptyPw() ([]byte, error) {
-	return nil, nil
+	return nilPw, nil
 }
 
 // Return true if file exists, false otherwise
@@ -80,68 +84,78 @@ p: 1
 func TestSignSimple(t *testing.T) {
 	assert := newAsserter(t)
 
-	kp, err := NewKeypair()
-	assert(err == nil, "NewKeyPair() fail")
+	sk, err := NewPrivateKey()
+	assert(err == nil, "NewPrivateKey() fail")
 
-	dn := tempdir(t)
+	pk := sk.PublicKey()
+
+	dn := t.TempDir()
 	bn := fmt.Sprintf("%s/t0", dn)
-
-	err = kp.Serialize(bn, "", hardcodedPw)
-	assert(err == nil, "keyPair.Serialize() fail")
 
 	pkf := fmt.Sprintf("%s.pub", bn)
 	skf := fmt.Sprintf("%s.key", bn)
 
-	// We must find these two files
-	assert(fileExists(pkf), "missing pkf")
-	assert(fileExists(skf), "missing skf")
+	err = pk.Serialize(pkf, "", true)
+	assert(err == nil, "can't serialize pk %s", pkf)
 
-	pk, err := ReadPublicKey(pkf)
+	// try to overwrite
+	err = pk.Serialize(pkf, "", false)
+	assert(err != nil, "pk %s overwritten!", pkf)
+
+	err = sk.Serialize(skf, "", true, fixedPw)
+	assert(err == nil, "can't serialize sk %s", skf)
+
+	err = sk.Serialize(skf, "", false, nilPw)
+	assert(err != nil, "sk %s overwritten!", skf)
+
+	// We must find these two files
+	assert(fileExists(pkf), "missing pkf %s", pkf)
+	assert(fileExists(skf), "missing skf %s", skf)
+
+	npk, err := ReadPublicKey(pkf)
 	assert(err == nil, "ReadPK() fail")
 
-	// -ditto- for Sk
-	sk, err := ReadPrivateKey(pkf, emptyPw)
+	// send the public key as private key
+	nsk, err := ReadPrivateKey(pkf, emptyPw)
 	assert(err != nil, "bad SK ReadSK fail: %s", err)
 
-	sk, err = ReadPrivateKey(skf, emptyPw)
-	assert(err != nil, "ReadSK() empty pw fail:  ks", err)
+	nsk, err = ReadPrivateKey(skf, emptyPw)
+	assert(err != nil, "ReadSK() worked with empty pw")
 
-	sk, err = ReadPrivateKey(skf, wrongPw)
-	assert(err != nil, "ReadSK() wrong pw fail: %s", err)
+	nsk, err = ReadPrivateKey(skf, wrongPw)
+	assert(err != nil, "ReadSK() worked with wrong pw")
 
 	badf := fmt.Sprintf("%s/badf.key", dn)
 	err = ioutil.WriteFile(badf, []byte(badsk), 0600)
-	assert(err == nil, "write badsk")
+	assert(err == nil, "can't write badsk: %s", err)
 
-	sk, err = ReadPrivateKey(badf, hardcodedPw)
-	assert(err != nil, "badsk read fail: %s", err)
+	nsk, err = ReadPrivateKey(badf, hardcodedPw)
+	assert(err != nil, "decoded bad SK")
 
 	// Finally, with correct password it should work.
-	sk, err = ReadPrivateKey(skf, hardcodedPw)
-	assert(err == nil, "ReadSK() correct pw fail")
+	nsk, err = ReadPrivateKey(skf, hardcodedPw)
+	assert(err == nil, "ReadSK() correct pw fail: %s", err)
 
 	// And, deserialized keys should be identical
-	assert(byteEq(pk.Pk, kp.Pub.Pk), "pkbytes unequal")
-	assert(byteEq(sk.Sk, kp.Sec.Sk), "skbytes unequal")
-
-	os.RemoveAll(dn)
+	assert(byteEq(pk.Pk, npk.Pk), "pkbytes unequal")
+	assert(byteEq(sk.Sk, nsk.Sk), "skbytes unequal")
 }
 
 // #2. Create new key pair, sign a rand buffer and verify
 func TestSignRandBuf(t *testing.T) {
 	assert := newAsserter(t)
-	kp, err := NewKeypair()
-	assert(err == nil, "NewKeyPair() fail")
+
+	sk, err := NewPrivateKey()
+	assert(err == nil, "NewPrivateKey() fail: %s", err)
 
 	var ck [64]byte // simulates sha512 sum
 
 	randRead(ck[:])
 
-	pk := &kp.Pub
-	sk := &kp.Sec
+	pk := sk.PublicKey()
 
 	ss, err := sk.SignMessage(ck[:], "")
-	assert(err == nil, "sk.sign fail")
+	assert(err == nil, "sk.sign fail: %s", err)
 	assert(ss != nil, "sig is null")
 
 	// verify sig
@@ -160,27 +174,13 @@ func TestSignRandBuf(t *testing.T) {
 	assert(ok, "verify fail")
 
 	// Now sign a file
-	dn := tempdir(t)
-	bn := fmt.Sprintf("%s/k", dn)
-
-	pkf := fmt.Sprintf("%s.pub", bn)
-	skf := fmt.Sprintf("%s.key", bn)
-
-	err = kp.Serialize(bn, "", emptyPw)
-	assert(err == nil, "keyPair.Serialize() fail")
-
-	// Now read the private key and sign
-	sk, err = ReadPrivateKey(skf, emptyPw)
-	assert(err == nil, "readSK fail")
-
-	pk, err = ReadPublicKey(pkf)
-	assert(err == nil, "ReadPK fail")
+	dn := t.TempDir()
 
 	var buf [8192]byte
 
 	zf := fmt.Sprintf("%s/file.dat", dn)
 	fd, err := os.OpenFile(zf, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
-	assert(err == nil, "file.dat creat file")
+	assert(err == nil, "file.dat creat file: %s", err)
 
 	for i := 0; i < 8; i++ {
 		randRead(buf[:])
@@ -192,27 +192,31 @@ func TestSignRandBuf(t *testing.T) {
 	fd.Close()
 
 	sig, err := sk.SignFile(zf)
-	assert(err == nil, "file.dat sign fail")
+	assert(err == nil, "file.dat sign fail: %s", err)
 	assert(sig != nil, "file.dat sign nil")
 
 	ok, err = pk.VerifyFile(zf, sig)
-	assert(err == nil, "file.dat verify fail")
+	assert(err == nil, "file.dat verify fail: %s", err)
 	assert(ok, "file.dat verify false")
 
 	// Now, serialize the signature and read it back
 	sf := fmt.Sprintf("%s/file.sig", dn)
-	err = sig.SerializeFile(sf, "")
-	assert(err == nil, "sig serialize fail")
+	err = sig.Serialize(sf, "", true)
+	assert(err == nil, "sig serialize fail: %s", err)
+
+	// now try to overwrite it
+	err = sig.Serialize(sf, "", false)
+	assert(err != nil, "sig serialize overwrote?!")
 
 	s2, err := ReadSignature(sf)
-	assert(err == nil, "file.sig read fail")
+	assert(err == nil, "file.sig read fail: %s", err)
 	assert(s2 != nil, "file.sig sig nil")
 
 	assert(byteEq(s2.Sig, sig.Sig), "sig compare fail")
 
 	// If we give a wrong file, verify must fail
 	st, err := os.Stat(zf)
-	assert(err == nil, "file.dat stat fail")
+	assert(err == nil, "file.dat stat fail: %s", err)
 
 	n := st.Size()
 	assert(n == 8192*8, "file.dat size fail")
@@ -220,12 +224,12 @@ func TestSignRandBuf(t *testing.T) {
 	os.Truncate(zf, n-1)
 
 	st, err = os.Stat(zf)
-	assert(err == nil, "file.dat stat2 fail")
+	assert(err == nil, "file.dat stat2 fail: %s", err)
 	assert(st.Size() == (n-1), "truncate fail")
 
 	// Now verify this corrupt file
 	ok, err = pk.VerifyFile(zf, sig)
-	assert(err == nil, "file.dat corrupt i/o fail")
+	assert(err == nil, "file.dat corrupt i/o fail: %s", err)
 	assert(!ok, "file.dat corrupt verify false")
 
 	os.RemoveAll(dn)
@@ -233,7 +237,7 @@ func TestSignRandBuf(t *testing.T) {
 
 func Benchmark_Keygen(b *testing.B) {
 	for i := 0; i < b.N; i++ {
-		_, _ = NewKeypair()
+		_, _ = NewPrivateKey()
 	}
 }
 
@@ -250,7 +254,8 @@ func Benchmark_Sig(b *testing.B) {
 	}
 
 	b.StopTimer()
-	kp, _ := NewKeypair()
+	sk, _ := NewPrivateKey()
+	pk := sk.PublicKey()
 	var sig *Signature
 	for _, sz := range sizes {
 		buf := randbuf(sz)
@@ -260,11 +265,11 @@ func Benchmark_Sig(b *testing.B) {
 		b.ResetTimer()
 
 		b.Run(s0, func(b *testing.B) {
-			sig = benchSign(b, buf, &kp.Sec)
+			sig = benchSign(b, buf, sk)
 		})
 
 		b.Run(s1, func(b *testing.B) {
-			benchVerify(b, buf, sig, &kp.Pub)
+			benchVerify(b, buf, sig, pk)
 		})
 	}
 }

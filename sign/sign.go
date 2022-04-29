@@ -86,12 +86,13 @@ func ReadSignature(fn string) (*Signature, error) {
 		return nil, err
 	}
 
-	return MakeSignature(yml)
+	var sig Signature
+	return makeSignature(&sig, yml)
 }
 
 // Parse serialized signature from bytes 'b' and construct a
 // Signature object
-func MakeSignature(b []byte) (*Signature, error) {
+func makeSignature(sig *Signature, b []byte) (*Signature, error) {
 	var ss signature
 	err := yaml.Unmarshal(b, &ss)
 	if err != nil {
@@ -110,29 +111,33 @@ func MakeSignature(b []byte) (*Signature, error) {
 		return nil, fmt.Errorf("can't decode Base64:Pkhash <%s>: %s", ss.Pkhash, err)
 	}
 
-	return &Signature{Sig: s, pkhash: p}, nil
+	sig.Sig = s
+	sig.pkhash = p
+	return sig, nil
 }
 
-// Serialize a signature suitable for storing in durable media
-func (sig *Signature) Serialize(comment string) ([]byte, error) {
-
+// MarshalBinary marshals a signature into a byte stream with
+// an optional caller supplied comment.
+func (sig *Signature) MarshalBinary(comment string) ([]byte, error) {
 	sigs := base64.StdEncoding.EncodeToString(sig.Sig)
 	pks := base64.StdEncoding.EncodeToString(sig.pkhash)
 	ss := &signature{Comment: comment, Pkhash: pks, Signature: sigs}
 
-	out, err := yaml.Marshal(ss)
-	if err != nil {
-		return nil, fmt.Errorf("can't marshal signature of %x to YAML: %s", sig.Sig, err)
-	}
-
-	return out, nil
+	return yaml.Marshal(ss)
 }
 
-// SerializeFile serializes the signature to an output file 'f'
-func (sig *Signature) SerializeFile(fn, comment string) error {
-	b, err := sig.Serialize(comment)
+// UnmarshalBinary constructs a Signature from a previously
+// serialized bytestream
+func (sig *Signature) UnmarshalBinary(b []byte) error {
+	_, err := makeSignature(sig, b)
+	return err
+}
+
+// Serialize a signature suitable for storing in durable media
+func (sig *Signature) Serialize(fn, comment string, ovwrite bool) error {
+	b, err := sig.MarshalBinary(comment)
 	if err == nil {
-		err = writeFile(fn, b, 0644)
+		err = writeFile(fn, b, ovwrite, 0644)
 	}
 	return err
 }
@@ -147,7 +152,6 @@ func (sig *Signature) IsPKMatch(pk *PublicKey) bool {
 // Verify a signature 'sig' for file 'fn' against public key 'pk'
 // Return True if signature matches, False otherwise
 func (pk *PublicKey) VerifyFile(fn string, sig *Signature) (bool, error) {
-
 	ck, err := fileCksum(fn, sha512.New())
 	if err != nil {
 		return false, err
