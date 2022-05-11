@@ -102,7 +102,7 @@ func encrypt(args []string) {
 	authkeys := fmt.Sprintf("%s/.ssh/authorized_keys", home)
 	authdata, err := ioutil.ReadFile(authkeys)
 	if err != nil {
-		if err != os.ErrNotExist {
+		if ! os.IsNotExist(err) {
 			die("can't open %s: %s", authkeys, err)
 		}
 	}
