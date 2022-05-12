@@ -48,7 +48,7 @@ func encrypt(args []string) {
 
 	err := fs.Parse(args)
 	if err != nil {
-		die("%s", err)
+		Die("%s", err)
 	}
 
 	var pws, infile string
@@ -64,19 +64,19 @@ func encrypt(args []string) {
 			} else {
 				pws, err = utils.Askpass("Enter passphrase for private key", false)
 				if err != nil {
-					die("%s", err)
+					Die("%s", err)
 				}
 			}
 			return []byte(pws), nil
 		})
 		if err != nil {
-			die("%s", err)
+			Die("%s", err)
 		}
 	}
 
 	args = fs.Args()
 	if len(args) < 2 {
-		die("Insufficient args. Try '%s --help'", os.Args[0])
+		Die("Insufficient args. Try '%s --help'", os.Args[0])
 	}
 
 	var infd io.Reader = os.Stdin
@@ -96,14 +96,14 @@ func encrypt(args []string) {
 	// Lets try to read the authorized files
 	home, err := os.UserHomeDir()
 	if err != nil {
-		die("can't find homedir for this user")
+		Die("can't find homedir for this user")
 	}
 
 	authkeys := fmt.Sprintf("%s/.ssh/authorized_keys", home)
 	authdata, err := ioutil.ReadFile(authkeys)
 	if err != nil {
-		if err != os.ErrNotExist {
-			die("can't open %s: %s", authkeys, err)
+		if !os.IsNotExist(err) {
+			Die("can't open %s: %s", authkeys, err)
 		}
 	}
 
@@ -122,30 +122,32 @@ func encrypt(args []string) {
 			var ist, ost os.FileInfo
 
 			if ost, err = os.Stat(outfile); err != nil {
-				die("can't stat %s: %s", outfile, err)
+				Die("can't stat %s: %s", outfile, err)
 			}
 
 			if ist, err = inf.Stat(); err != nil {
-				die("can't stat %s: %s", infile, err)
+				Die("can't stat %s: %s", infile, err)
 			}
 
 			if os.SameFile(ist, ost) {
-				die("won't create output file: same as input file!")
+				Die("won't create output file: same as input file!")
 			}
 			mode = ist.Mode()
 		}
 
 		sf, err := sign.NewSafeFile(outfile, force, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
 		if err != nil {
-			die("%s", err)
+			Die("%s", err)
 		}
+
+		AtExit(sf.Abort)
 		defer sf.Abort()
 		outfd = sf
 	}
 
 	en, err := sign.NewEncryptor(sk, blksize)
 	if err != nil {
-		die("%s", err)
+		Die("%s", err)
 	}
 
 	errs := 0
@@ -158,14 +160,14 @@ func encrypt(args []string) {
 			var ok bool
 			pk, ok = keymap[fn]
 			if !ok {
-				warn("can't find user %s in %s", fn, authkeys)
+				Warn("can't find user %s in %s", fn, authkeys)
 				errs += 1
 				continue
 			}
 		} else {
 			pk, err = sign.ReadPublicKey(fn)
 			if err != nil {
-				warn("%s", err)
+				Warn("%s", err)
 				errs += 1
 				continue
 			}
@@ -173,17 +175,17 @@ func encrypt(args []string) {
 
 		err = en.AddRecipient(pk)
 		if err != nil {
-			die("%s", err)
+			Die("%s", err)
 		}
 	}
 
 	if errs > 0 {
-		die("Too many errors!")
+		Die("Too many errors!")
 	}
 
 	err = en.Encrypt(infd, outfd)
 	if err != nil {
-		die("%s", err)
+		Die("%s", err)
 	}
 	outfd.Close()
 }
@@ -221,12 +223,12 @@ func decrypt(args []string) {
 
 	err := fs.Parse(args)
 	if err != nil {
-		die("%s", err)
+		Die("%s", err)
 	}
 
 	args = fs.Args()
 	if len(args) < 1 {
-		die("Insufficient args. Try '%s --help'", os.Args[0])
+		Die("Insufficient args. Try '%s --help'", os.Args[0])
 	}
 
 	var infd io.Reader = os.Stdin
@@ -246,13 +248,13 @@ func decrypt(args []string) {
 		} else {
 			pws, err = utils.Askpass("Enter passphrase for private key", false)
 			if err != nil {
-				die("%s", err)
+				Die("%s", err)
 			}
 		}
 		return []byte(pws), nil
 	})
 	if err != nil {
-		die("%s", err)
+		Die("%s", err)
 	}
 
 	var pk *sign.PublicKey
@@ -260,7 +262,7 @@ func decrypt(args []string) {
 	if len(pubkey) > 0 {
 		pk, err = sign.ReadPublicKey(pubkey)
 		if err != nil {
-			die("%s", err)
+			Die("%s", err)
 		}
 	}
 
@@ -284,33 +286,35 @@ func decrypt(args []string) {
 			var err error
 
 			if ost, err = os.Stat(outfile); err != nil {
-				die("can't stat %s: %s", outfile, err)
+				Die("can't stat %s: %s", outfile, err)
 			}
 			if ist, err = inf.Stat(); err != nil {
-				die("can't stat %s: %s", infile, err)
+				Die("can't stat %s: %s", infile, err)
 			}
 			if os.SameFile(ist, ost) {
-				die("won't create output file: same as input file!")
+				Die("won't create output file: same as input file!")
 			}
 			mode = ist.Mode()
 		}
 
 		sf, err := sign.NewSafeFile(outfile, force, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
 		if err != nil {
-			die("%s", err)
+			Die("%s", err)
 		}
+
+		AtExit(sf.Abort)
 		defer sf.Abort()
 		outfd = sf
 	}
 
 	d, err := sign.NewDecryptor(infd)
 	if err != nil {
-		die("%s", err)
+		Die("%s", err)
 	}
 
 	err = d.SetPrivateKey(sk, pk)
 	if err != nil {
-		die("%s", err)
+		Die("%s", err)
 	}
 
 	if pk == nil && d.AuthenticatedSender() {
@@ -318,17 +322,17 @@ func decrypt(args []string) {
 		if len(fn) == 0 || fn == "-" {
 			fn = "<stdin>"
 		}
-		warn("%s: Missing sender Public Key; can't authenticate sender ..", fn)
+		Warn("%s: Missing sender Public Key; can't authenticate sender ..", fn)
 	}
 
 	if err = d.Decrypt(outfd); err != nil {
-		die("%s", err)
+		Die("%s", err)
 	}
 
 	outfd.Close()
 
 	if test {
-		warn("Enc file OK")
+		Warn("Enc file OK")
 	}
 
 }
@@ -338,9 +342,16 @@ func encryptUsage(fs *flag.FlagSet) {
 
 Usage: %s encrypt [options] to [to ...] infile|-
 
-Where TO is the public key of the recipient and INFILE is an input file.
-If the input file is '-' then %s reads from STDIN. Unless '-o' is used,
-%s writes the encrypted output to STDOUT.
+Where TO is the public key of the recipient; it can be one of:
+
+- a file referring to an SSH or sigtool public key.
+- string of the form 'a@b' - in which case the user's default
+  ssh/authorized_keys is consulted to find the comment matching
+  'a@b' - in which case the user's ssh authorized_keys file is consulted to
+  find the comment matching the string.
+
+INFILE is an input file to be encrypted. If the input file is '-' then %s
+reads from STDIN. Unless '-o' is used, %s writes the encrypted output to STDOUT.
 
 Options:
 `, Z, Z, Z, Z)
@@ -368,7 +379,7 @@ Options:
 func mustOpen(fn string, flag int) *os.File {
 	fdk, err := os.OpenFile(fn, flag, 0600)
 	if err != nil {
-		die("can't open file %s: %s", fn, err)
+		Die("can't open file %s: %s", fn, err)
 	}
 	return fdk
 }

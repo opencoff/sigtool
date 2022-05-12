@@ -24,12 +24,11 @@ _testmain.go
 *.prof
 vendor/*
 
-# vendor management
-vendor/src/*
-vendor/pkg/*
 bin/*
+sigtool
 
 .??*.sw?
 *.pub
 *.key
 *.sig
+

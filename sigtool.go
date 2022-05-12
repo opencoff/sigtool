@@ -49,8 +49,7 @@ func main() {
 
 	args := mf.Args()
 	if len(args) < 1 {
-		warn("Insufficient arguments. Try '%s -h'", Z)
-		os.Exit(1)
+		Die("Insufficient arguments. Try '%s -h'", Z)
 	}
 
 	cmds := map[string]func(args []string){
@@ -73,15 +72,18 @@ func main() {
 	ab := utils.Abbrev(words)
 	canon, ok := ab[strings.ToLower(args[0])]
 	if !ok {
-		die("Unknown command %s", args[0])
+		Die("Unknown command %s", args[0])
 	}
 
 	cmd := cmds[canon]
 	if cmd == nil {
-		die("can't map command %s", canon)
+		Die("can't map command %s", canon)
 	}
 
 	cmd(args[1:])
+	
+	// always call Exit so that at-exit handlers are called.
+	Exit(0)
 }
 
 // Run the generate command
@@ -115,7 +117,7 @@ Options:
 
 	args = fs.Args()
 	if len(args) < 1 {
-		die("Insufficient arguments to 'generate'. Try '%s generate -h' ..", Z)
+		Die("Insufficient arguments to 'generate'. Try '%s generate -h' ..", Z)
 	}
 
 	bn := args[0]
@@ -125,7 +127,7 @@ Options:
 
 	if !force {
 		if exists(pkn) || exists(skn) {
-			die("Public/Private key files (%s, %s) exist. won't overwrite!", skn, pkn)
+			Die("Public/Private key files (%s, %s) exist. won't overwrite!", skn, pkn)
 		}
 	}
 
@@ -139,7 +141,7 @@ Options:
 		} else {
 			pws, err = utils.Askpass("Enter passphrase for private key", true)
 			if err != nil {
-				die("%s", err)
+				Die("%s", err)
 			}
 		}
 
@@ -148,16 +150,16 @@ Options:
 
 	sk, err := sign.NewPrivateKey()
 	if err != nil {
-		die("%s", err)
+		Die("%s", err)
 	}
 
 	if err = sk.Serialize(skn, comment, force, pw); err != nil {
-		die("%s", err)
+		Die("%s", err)
 	}
 
 	pk := sk.PublicKey()
 	if err = pk.Serialize(pkn, comment, force); err != nil {
-		die("%s", err)
+		Die("%s", err)
 	}
 }
 
@@ -190,7 +192,7 @@ Options:
 
 	args = fs.Args()
 	if len(args) < 2 {
-		die("Insufficient arguments to 'sign'. Try '%s sign -h' ..", Z)
+		Die("Insufficient arguments to 'sign'. Try '%s sign -h' ..", Z)
 	}
 
 	kn := args[0]
@@ -208,10 +210,11 @@ Options:
 	if outf != "-" {
 		sf, err := sign.NewSafeFile(outf, force, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
 		if err != nil {
-			die("can't create sig file: %s", err)
+			Die("can't create sig file: %s", err)
 		}
 
 		// we unlink and remove temp on any error
+		AtExit(sf.Abort)
 		defer sf.Abort()
 		fd = sf
 	}
@@ -227,19 +230,19 @@ Options:
 		} else {
 			pws, err = utils.Askpass("Enter passphrase for private key", false)
 			if err != nil {
-				die("%s", err)
+				Die("%s", err)
 			}
 		}
 
 		return []byte(pws), nil
 	})
 	if err != nil {
-		die("%s", err)
+		Die("%s", err)
 	}
 
 	sig, err := sk.SignFile(fn)
 	if err != nil {
-		die("%s", err)
+		Die("%s", err)
 	}
 
 	sigbytes, err := sig.MarshalBinary(fmt.Sprintf("input=%s", fn))
@@ -271,7 +274,7 @@ Options:
 
 	args = fs.Args()
 	if len(args) < 3 {
-		die("Insufficient arguments to 'verify'. Try '%s verify -h' ..", Z)
+		Die("Insufficient arguments to 'verify'. Try '%s verify -h' ..", Z)
 	}
 
 	pn := args[0]
@@ -280,21 +283,21 @@ Options:
 
 	sig, err := sign.ReadSignature(sn)
 	if err != nil {
-		die("Can't read signature '%s': %s", sn, err)
+		Die("Can't read signature '%s': %s", sn, err)
 	}
 
 	pk, err := sign.ReadPublicKey(pn)
 	if err != nil {
-		die("%s", err)
+		Die("%s", err)
 	}
 
 	if !sig.IsPKMatch(pk) {
-		die("Wrong public key '%s' for verifying '%s'", pn, sn)
+		Die("Wrong public key '%s' for verifying '%s'", pn, sn)
 	}
 
 	ok, err := pk.VerifyFile(fn, sig)
 	if err != nil {
-		die("%s", err)
+		Die("%s", err)
 	}
 
 	exit := 0
@@ -341,23 +344,6 @@ func exists(nm string) bool {
 	}
 
 	return false
-}
-
-// die with error
-func die(f string, v ...interface{}) {
-	warn(f, v...)
-	os.Exit(1)
-}
-
-func warn(f string, v ...interface{}) {
-	z := fmt.Sprintf("%s: %s", os.Args[0], f)
-	s := fmt.Sprintf(z, v...)
-	if n := len(s); s[n-1] != '\n' {
-		s += "\n"
-	}
-
-	os.Stderr.WriteString(s)
-	os.Stderr.Sync()
 }
 
 // This will be filled in by "build"
