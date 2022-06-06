@@ -2,9 +2,11 @@
 
 
 # simple round-trip tests to verify the tool
-
-arch=`./build --print-arch`
-bin=./bin/$arch/sigtool
+bin="`for sigtool in ./bin/*/sigtool; do test -x "${sigtool}" && { "${sigtool}" -h >/dev/null 2>&1 && { echo "${sigtool}"; exit 0; }; }; done`"
+test -z "${bin}" && {
+  arch=`./build --print-arch`
+  bin=./bin/$arch/sigtool
+}
 Z=`basename $0`
 
 # workdir
