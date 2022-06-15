@@ -65,6 +65,7 @@ import (
 	"golang.org/x/crypto/curve25519"
 	"golang.org/x/crypto/hkdf"
 	"io"
+	"os"
 
 	"github.com/opencoff/sigtool/internal/pb"
 )
@@ -241,6 +242,9 @@ func (e *Encryptor) start(wr io.Writer) error {
 	h.Write(e.key)
 	h.Write(sumHdr)
 	key := h.Sum(nil)
+
+	debug("encrypt:\n\thdr-cksum: %x\n\tsalt: %x\n\tkey: %x\n\taes-key: %x\n",
+		sumHdr, e.Salt, e.key, key)
 
 	aes, err := aes.NewCipher(key)
 	if err != nil {
@@ -421,6 +425,9 @@ havekey:
 	h.Write(d.key)
 	h.Write(d.hdrsum)
 	key = h.Sum(nil)
+
+	debug("decrypt:\n\thdr-cksum: %x\n\tsalt: %x\n\tkey: %x\n\taes-key: %x\n",
+		d.hdrsum, d.Salt, d.key, key)
 
 	aes, err := aes.NewCipher(key)
 	if err != nil {
@@ -734,6 +741,27 @@ func sha256Slices(v ...[]byte) []byte {
 		h.Write(x)
 	}
 	return h.Sum(nil)[:]
+}
+
+var _debug int = 0
+
+// Enable debugging of this module;
+// level > 0 elicits debug messages on os.Stderr
+func Debug(level int) {
+	_debug = level
+}
+
+func debug(s string, v ...interface{}) {
+	if _debug <= 0 {
+		return
+	}
+
+	z := fmt.Sprintf(s, v...)
+	if n := len(z); z[n-1] != '\n' {
+		z += "\n"
+	}
+	os.Stderr.WriteString(z)
+	os.Stderr.Sync()
 }
 
 // EOF
