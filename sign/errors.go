@@ -20,17 +20,19 @@ import (
 
 var (
 	ErrClosed         = errors.New("encrypt: stream already closed")
-	ErrNoKey          = errors.New("decrypt: No private key set for decryption")
+	ErrNoKey          = errors.New("decrypt: no private key set for decryption")
 	ErrEncStarted     = errors.New("encrypt: can't add new recipient after encryption has started")
 	ErrDecStarted     = errors.New("decrypt: can't add new recipient after decryption has started")
 	ErrEncIsStream    = errors.New("encrypt: can't use Encrypt() after using streaming I/O")
-	ErrNotSigTool     = errors.New("decrypt: Not a sigtool encrypted file?")
+	ErrNotSigTool     = errors.New("decrypt: not a sigtool encrypted file?")
 	ErrHeaderTooBig   = errors.New("decrypt: header too large (max 1048576)")
 	ErrHeaderTooSmall = errors.New("decrypt: header too small (min 32)")
 	ErrBadHeader      = errors.New("decrypt: header corrupted")
-	ErrNoWrappedKeys  = errors.New("decrypt: No wrapped keys in encrypted file")
+	ErrNoWrappedKeys  = errors.New("decrypt: no wrapped keys in encrypted file")
 	ErrBadKey         = errors.New("decrypt: wrong key")
+	ErrBadTrailer     = errors.New("decrypt: message integrity failed (bad trailer)")
 	ErrBadSender      = errors.New("unwrap: sender verification failed")
+	ErrNoSenderPK     = errors.New("unwrap: missing sender public key")
 
 	ErrIncorrectPassword = errors.New("ssh: invalid passphrase")
 	ErrNoPEMFound        = errors.New("ssh: no PEM block found")

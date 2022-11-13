@@ -30,12 +30,13 @@ var Z string = path.Base(os.Args[0])
 
 func main() {
 
-	var ver, help bool
+	var ver, help, debug bool
 
 	mf := flag.NewFlagSet(Z, flag.ExitOnError)
 	mf.SetInterspersed(false)
 	mf.BoolVarP(&ver, "version", "v", false, "Show version info and exit")
 	mf.BoolVarP(&help, "help", "h", false, "Show help info exit")
+	mf.BoolVarP(&debug, "debug", "", false, "Enable debug mode")
 	mf.Parse(os.Args[1:])
 
 	if ver {
@@ -80,8 +81,12 @@ func main() {
 		Die("can't map command %s", canon)
 	}
 
+	if debug {
+		sign.Debug(1)
+	}
+
 	cmd(args[1:])
-	
+
 	// always call Exit so that at-exit handlers are called.
 	Exit(0)
 }
@@ -323,7 +328,8 @@ Usage: %s [global-options] command [options] arg [args..]
 
 Global options:
   -h, --help       Show help and exit
-  -v, --version    Show version info and exit.
+  -v, --version    Show version info and exit
+  --debug	   Enable debug (DANGEROUS)
 
 Commands:
   generate, g      Generate a new Ed25519 keypair

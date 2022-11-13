@@ -26,29 +26,36 @@
 //
 // Variable Length Segment:
 //    - Protobuf encoded, per-recipient wrapped keys
-//    - Shasum:  32 bytes (SHA256 of full header)
 //
 // The variable length segment consists of one or more
-// recipients, each with their wrapped keys. This is encoded as
-// a protobuf message. This protobuf encoded message immediately
-// follows the fixed length header.
+// recipients, each with their individually wrapped keys.
 //
 // The input data is encrypted with an expanded random 32-byte key:
-//    - Prefix_string = "Encrypt Nonce"
-//    - datakey = SHA256(Prefix_string || header_checksum || random_key)
-//    - The header checksum is mixed in the above process to ensure we
-//      catch any malicious modification of the header.
+//    - hkdf-sha512 of random key, salt, context
+//    - the hkdf process yields a data-encryption key, nonce and hmac key.
+//    - we use the header checksum as the 'salt' for HKDF; this ensures that
+//      any modification of the header yields different keys
+//
+// We also calculate the cumulative hmac-sha256 of the plaintext blocks.
+//    - When sender identity is present, we sign the final hmac and append
+//	the signature as the "trailer".
+//    - When sender identity is NOT present, we put random bytes as the
+//      "signature". ie in either case, there is a trailer.
+//
+// Note: If the trailer is missing from a sigtool encrypted file - the
+// recipient has no guarantees of content immutability (ie tampering
+// from one of the _other_ recipients).
 //
 // The input data is broken up into "chunks"; each no larger than
 // maxChunkSize. The default block size is "chunkSize". Each block
 // is AEAD encrypted:
-//   AEAD nonce = header.salt || block# || block-size
+//   AEAD nonce = header.nonce || block#
+//   AD of AEAD = chunk length+eof marker
 //
 // The encrypted block (includes the AEAD tag) length is written
 // as a big-endian 4-byte prefix. The high-order bit of this length
 // field is set for the last-block (denoting EOF).
 //
-// The encrypted blocks use an opinionated nonce length of 32 (_AEADNonceLen).
 
 package sign
 
@@ -57,6 +64,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/ed25519"
+	"crypto/hmac"
 	"crypto/sha256"
 	"crypto/sha512"
 	"crypto/subtle"
@@ -64,43 +72,56 @@ import (
 	"fmt"
 	"golang.org/x/crypto/curve25519"
 	"golang.org/x/crypto/hkdf"
+	"hash"
 	"io"
+	"os"
 
 	"github.com/opencoff/sigtool/internal/pb"
 )
 
 // Encryption chunk size = 4MB
 const (
-	chunkSize    uint32 = 4 * 1048576
+	// The latest version of the tool's output file format
+	_SigtoolVersion = 3
+
+	chunkSize    uint32 = 4 * 1048576 // 4 MB
 	maxChunkSize uint32 = 1 << 30
 	_EOF         uint32 = 1 << 31
 
-	_Magic          = "SigTool"
-	_MagicLen       = len(_Magic)
-	_SigtoolVersion = 2
-	_AEADNonceLen   = 32
-	_FixedHdrLen    = _MagicLen + 1 + 4
+	_Magic       = "SigTool"
+	_MagicLen    = len(_Magic)
+	_FixedHdrLen = _MagicLen + 1 + 4 // 1: version, 4: len of variable segment
 
-	_WrapReceiverNonce = "Receiver Key Nonce"
-	_WrapSenderNonce   = "Sender Sig Nonce"
-	_EncryptNonce      = "Encrypt Nonce"
+	_AesKeySize    = 32
+	_AEADNonceSize = 12
+	_SaltSize      = 32
+	_RxNonceSize   = 12 // nonce size of per-recipient encrypted blocks
+
+	_WrapReceiver     = "Receiver Key"
+	_WrapSender       = "Sender Sig"
+	_DataKeyExpansion = "Data Key Expansion"
 )
 
 // Encryptor holds the encryption context
 type Encryptor struct {
 	pb.Header
-	key []byte // file encryption key
+	key []byte // root key
 
-	ae cipher.AEAD
+	nonce []byte // nonce for the data encrypting cipher
+	buf   []byte // I/O buf (chunk-sized)
+
+	ae   cipher.AEAD
+	hmac hash.Hash
 
 	// ephemeral key
 	encSK []byte
 
-	started bool
+	// sender identity
+	sender *PrivateKey
 
-	hdrsum []byte
-	buf    []byte
-	stream bool
+	auth    bool // set if the sender idetity is sent
+	started bool
+	stream  bool
 }
 
 // Create a new Encryption context for encrypting blocks of size 'blksize'.
@@ -123,27 +144,23 @@ func NewEncryptor(sk *PrivateKey, blksize uint64) (*Encryptor, error) {
 		return nil, fmt.Errorf("encrypt: %w", err)
 	}
 
-	key := make([]byte, 32)
-	salt := make([]byte, _AEADNonceLen)
-
-	randRead(key)
-	randRead(salt)
-
-	wSig, err := wrapSenderSig(sk, key, salt)
-	if err != nil {
-		return nil, fmt.Errorf("encrypt: %w", err)
-	}
+	key := randBuf(_AesKeySize)
+	salt := randBuf(_SaltSize)
 
 	e := &Encryptor{
 		Header: pb.Header{
-			ChunkSize:  blksz,
-			Salt:       salt,
-			Pk:         epk,
-			SenderSign: wSig,
+			ChunkSize: blksz,
+			Salt:      salt,
+			Pk:        epk,
 		},
 
-		key:   key,
-		encSK: esk,
+		key:    key,
+		encSK:  esk,
+		sender: sk,
+	}
+
+	if err = e.addSenderSig(sk); err != nil {
+		return nil, fmt.Errorf("encrypt: %w", err)
 	}
 
 	return e, nil
@@ -210,8 +227,8 @@ func (e *Encryptor) start(wr io.Writer) error {
 
 	buffer := make([]byte, _FixedHdrLen+varSize+sha256.Size)
 	fixHdr := buffer[:_FixedHdrLen]
-	varHdr := buffer[_FixedHdrLen:]
-	sumHdr := varHdr[varSize:]
+	varHdr := buffer[_FixedHdrLen : _FixedHdrLen+varSize]
+	sumHdr := buffer[_FixedHdrLen+varSize:]
 
 	// Now assemble the fixed header
 	copy(fixHdr[:], []byte(_Magic))
@@ -224,38 +241,45 @@ func (e *Encryptor) start(wr io.Writer) error {
 		return fmt.Errorf("encrypt: can't marshal header: %w", err)
 	}
 
-	// Now calculate checksum of everything
 	h := sha256.New()
 	h.Write(buffer[:_FixedHdrLen+varSize])
-	h.Sum(sumHdr[:0])
+	cksum := h.Sum(sumHdr[:0])
 
-	// Finally write it out
+	// now make the data encryption keys, nonces etc.
+	outbuf := make([]byte, sha256.Size+_AesKeySize+_AEADNonceSize)
+
+	// we mix the header checksum (and it captures the sigtool version, sender
+	// identity, etc.)
+	buf := expand(outbuf, e.key, cksum, []byte(_DataKeyExpansion))
+
+	var dkey, hmackey []byte
+
+	e.nonce, buf = buf[:_AEADNonceSize], buf[_AEADNonceSize:]
+	dkey, buf = buf[:_AesKeySize], buf[_AesKeySize:]
+	hmackey = buf
+
+	aes, err := aes.NewCipher(dkey)
+	if err != nil {
+		return fmt.Errorf("encrypt: %w", err)
+	}
+
+	if e.ae, err = cipher.NewGCM(aes); err != nil {
+		return fmt.Errorf("encrypt: %w", err)
+	}
+
+	// Finally write out the header
 	err = fullwrite(buffer, wr)
 	if err != nil {
 		return fmt.Errorf("encrypt: %w", err)
 	}
 
-	// we mix the header checksum to create the encryption key
-	h = sha256.New()
-	h.Write([]byte(_EncryptNonce))
-	h.Write(e.key)
-	h.Write(sumHdr)
-	key := h.Sum(nil)
-
-	aes, err := aes.NewCipher(key)
-	if err != nil {
-		return fmt.Errorf("encrypt: %w", err)
-	}
-
-	ae, err := cipher.NewGCMWithNonceSize(aes, _AEADNonceLen)
-	if err != nil {
-		return fmt.Errorf("encrypt: %w", err)
-	}
-
-	e.buf = make([]byte, e.ChunkSize+4+uint32(ae.Overhead()))
-	e.ae = ae
-
+	e.hmac = hmac.New(sha256.New, hmackey)
+	e.buf = make([]byte, e.ChunkSize+4+uint32(e.ae.Overhead()))
 	e.started = true
+
+	debug("encrypt:\n\thdr-cksum: %x\n\taes-key: %x\n\tnonce: %x\n\thmac-key: %x\n",
+		cksum, dkey, e.nonce, hmackey)
+
 	return nil
 }
 
@@ -264,29 +288,69 @@ func (e *Encryptor) start(wr io.Writer) error {
 // This protects the output stream from re-ordering attacks and length
 // modification attacks. The encoded length & block number is used as
 // additional data in the AEAD construction.
-func (e *Encryptor) encrypt(buf []byte, wr io.Writer, i uint32, eof bool) error {
-	var z uint32 = uint32(len(buf))
-	var nbuf [_AEADNonceLen]byte
+func (e *Encryptor) encrypt(pt []byte, wr io.Writer, i uint32, eof bool) error {
+	var z uint32 = uint32(len(pt))
+	var nonce [_AEADNonceSize]byte
 
 	// mark last block
 	if eof {
 		z |= _EOF
 	}
 
-	b := e.buf[:8]
-	binary.BigEndian.PutUint32(b[:4], z)
-	binary.BigEndian.PutUint32(b[4:], i)
+	copy(nonce[:], e.nonce)
 
-	nonce := makeNonceV2(nbuf[:], e.Salt, b)
+	// now change the upper bytes to track the block#; we use the len+eof as AD
+	binary.BigEndian.PutUint32(nonce[:4], i)
 
-	cbuf := e.buf[4:]
-	c := e.ae.Seal(cbuf[:0], nonce, buf, b[:])
+	// put the encoded length+eof at the start of the output buf
+	b := e.buf[:4]
+	ctbuf := e.buf[4:]
+
+	binary.BigEndian.PutUint32(b, z)
+	ct := e.ae.Seal(ctbuf[:0], nonce[:], pt, b)
 
 	// total number of bytes written
-	n := len(c) + 4
+	n := len(ct) + 4
 	err := fullwrite(e.buf[:n], wr)
 	if err != nil {
 		return fmt.Errorf("encrypt: %w", err)
+	}
+
+	e.hmac.Write(b)
+	e.hmac.Write(pt)
+
+	if eof {
+		return e.writeTrailer(wr)
+	}
+	return nil
+}
+
+// Write a trailer:
+//   - if authenticating sender, sign the hmac and put the signature in the trailer
+//   - if not authenticating sender, write random bytes to the trailer
+func (e *Encryptor) writeTrailer(wr io.Writer) error {
+	var tr []byte
+
+	switch e.auth {
+	case true:
+		var hmac [sha256.Size]byte
+
+		e.hmac.Sum(hmac[:0])
+
+		// We know sender is non null.
+		sig, err := e.sender.SignMessage(hmac[:], "")
+		if err != nil {
+			return fmt.Errorf("encrypt: trailer: %w", err)
+		}
+		tr = sig.Sig
+
+	case false:
+		tr = randBuf(ed25519.SignatureSize)
+
+	}
+
+	if err := fullwrite(tr, wr); err != nil {
+		return fmt.Errorf("encrypt: trailer %w", err)
 	}
 	return nil
 }
@@ -295,16 +359,18 @@ func (e *Encryptor) encrypt(buf []byte, wr io.Writer, i uint32, eof bool) error 
 type Decryptor struct {
 	pb.Header
 
-	ae     cipher.AEAD
-	rd     io.Reader
-	buf    []byte
-	hdrsum []byte
+	ae   cipher.AEAD
+	hmac hash.Hash
 
-	// flag set to true if sender signed the key
-	auth bool
+	sender *PublicKey
 
-	// Decrypted key
-	key    []byte
+	rd    io.Reader
+	buf   []byte
+	nonce []byte // nonce for the data decrypting cipher
+
+	key    []byte // Decrypted root key
+	hdrsum []byte // cached header checksum
+	auth   bool   // flag set to true if sender signed the key
 	eof    bool
 	stream bool
 }
@@ -347,14 +413,18 @@ func NewDecryptor(rd io.Reader) (*Decryptor, error) {
 		return nil, fmt.Errorf("decrypt: error while reading header: %w", err)
 	}
 
+	// The checksum in the header
 	verify := varBuf[varSize:]
+
+	// the checksum we calculated
+	var csum [sha256.Size]byte
 
 	h := sha256.New()
 	h.Write(b[:])
 	h.Write(varBuf[:varSize])
-	cksum := h.Sum(nil)
+	cksum := h.Sum(csum[:0])
 
-	if subtle.ConstantTimeCompare(verify, cksum[:]) == 0 {
+	if subtle.ConstantTimeCompare(verify, cksum) == 0 {
 		return nil, ErrBadHeader
 	}
 
@@ -372,7 +442,7 @@ func NewDecryptor(rd io.Reader) (*Decryptor, error) {
 		return nil, fmt.Errorf("decrypt: invalid chunkSize %d", d.ChunkSize)
 	}
 
-	if len(d.Salt) != _AEADNonceLen {
+	if len(d.Salt) != _SaltSize {
 		return nil, fmt.Errorf("decrypt: invalid nonce length %d", len(d.Salt))
 	}
 
@@ -382,7 +452,7 @@ func NewDecryptor(rd io.Reader) (*Decryptor, error) {
 
 	// sanity check on the wrapped keys
 	for i, w := range d.Keys {
-		if len(w.DKey) <= 32 {
+		if len(w.DKey) <= _AesKeySize {
 			return nil, fmt.Errorf("decrypt: wrapped key %d: wrong-size encrypted key", i)
 		}
 	}
@@ -402,6 +472,8 @@ func (d *Decryptor) SetPrivateKey(sk *PrivateKey, senderPk *PublicKey) error {
 			return fmt.Errorf("decrypt: can't unwrap key %d: %w", i, err)
 		}
 		if key != nil {
+			d.key = key
+			d.sender = senderPk
 			goto havekey
 		}
 	}
@@ -409,28 +481,37 @@ func (d *Decryptor) SetPrivateKey(sk *PrivateKey, senderPk *PublicKey) error {
 	return ErrBadKey
 
 havekey:
-	if err := d.verifySender(key, sk, senderPk); err != nil {
+	if err := d.verifySender(key, senderPk); err != nil {
 		return fmt.Errorf("decrypt: %w", err)
 	}
 
-	d.key = key
+	outbuf := make([]byte, sha256.Size+_AesKeySize+_AEADNonceSize)
 
-	// we mix the header checksum into the key
-	h := sha256.New()
-	h.Write([]byte(_EncryptNonce))
-	h.Write(d.key)
-	h.Write(d.hdrsum)
-	key = h.Sum(nil)
+	buf := expand(outbuf, d.key, d.hdrsum, []byte(_DataKeyExpansion))
 
-	aes, err := aes.NewCipher(key)
+	var dkey, hmackey []byte
+
+	d.nonce, buf = buf[:_AEADNonceSize], buf[_AEADNonceSize:]
+	dkey, buf = buf[:_AesKeySize], buf[_AesKeySize:]
+	hmackey = buf
+
+	d.hmac = hmac.New(sha256.New, hmackey)
+
+	aes, err := aes.NewCipher(dkey)
 	if err != nil {
 		return fmt.Errorf("decrypt: %w", err)
 	}
 
-	d.ae, err = cipher.NewGCMWithNonceSize(aes, _AEADNonceLen)
+	d.ae, err = cipher.NewGCM(aes)
 	if err != nil {
 		return fmt.Errorf("decrypt: %w", err)
 	}
+
+	debug("decrypt:\n\thdr-cksum: %x\n\taes-key: %x\n\tnonce: %x\n\thmac-key: %x\n",
+		d.hdrsum, dkey, d.nonce, hmackey)
+
+	// We have a separate on-stack buffer for reading the header (4 bytes).
+	// Thus, the actual I/O buf will never be larger than the chunksize + AEAD Overhead
 	d.buf = make([]byte, int(d.ChunkSize)+d.ae.Overhead())
 	return nil
 }
@@ -477,17 +558,16 @@ func (d *Decryptor) Decrypt(wr io.Writer) error {
 
 // Decrypt exactly one chunk of data
 func (d *Decryptor) decrypt(i uint32) ([]byte, bool, error) {
-	var b [8]byte
-	var nonceb [32]byte
 	var ovh uint32 = uint32(d.ae.Overhead())
-	var p []byte
+	var b [4]byte
+	var nonce [_AEADNonceSize]byte
 
-	n, err := io.ReadFull(d.rd, b[:4])
+	n, err := io.ReadFull(d.rd, b[:])
 	if err != nil || n == 0 {
 		return nil, false, fmt.Errorf("decrypt: premature EOF while reading header block %d", i)
 	}
 
-	m := binary.BigEndian.Uint32(b[:4])
+	m := binary.BigEndian.Uint32(b[:])
 	eof := (m & _EOF) > 0
 	m &= (_EOF - 1)
 
@@ -500,13 +580,14 @@ func (d *Decryptor) decrypt(i uint32) ([]byte, bool, error) {
 		if !eof {
 			return nil, false, fmt.Errorf("decrypt: block %d: zero-sized chunk without EOF", i)
 		}
-		return p, eof, nil
+		return nil, eof, nil
 
 	default:
 	}
 
-	binary.BigEndian.PutUint32(b[4:], i)
-	nonce := makeNonceV2(nonceb[:], d.Salt, b[:])
+	// make the nonce - top 4 bytes are the counter
+	copy(nonce[:], d.nonce)
+	binary.BigEndian.PutUint32(nonce[:4], i)
 
 	z := m + ovh
 	n, err = io.ReadFull(d.rd, d.buf[:z])
@@ -514,57 +595,115 @@ func (d *Decryptor) decrypt(i uint32) ([]byte, bool, error) {
 		return nil, false, fmt.Errorf("decrypt: premature EOF while reading block %d: %w", i, err)
 	}
 
-	p, err = d.ae.Open(d.buf[:0], nonce, d.buf[:n], b[:])
+	pt, err := d.ae.Open(d.buf[:0], nonce[:], d.buf[:n], b[:])
 	if err != nil {
 		return nil, false, fmt.Errorf("decrypt: can't decrypt chunk %d: %w", i, err)
 	}
 
-	return p[:m], eof, nil
-}
-
-// Wrap sender's signature of the encryption key
-// if sender has provided their identity to authenticate, we sign the data-enc key
-// and encrypt the signature. At no point will we send the sender's identity.
-func wrapSenderSig(sk *PrivateKey, key, salt []byte) ([]byte, error) {
-	var zero [ed25519.SignatureSize]byte
-	var sig []byte
-
-	switch {
-	case sk == nil:
-		sig = zero[:]
-
-	default:
-		xsig, err := sk.SignMessage(key, "")
-		if err != nil {
-			return nil, fmt.Errorf("wrap: can't sign: %w", err)
-		}
-
-		sig = xsig.Sig
+	if uint32(len(pt)) != m {
+		return nil, false, fmt.Errorf("decrypt: partial unsealed bytes; exp %d, saw %d", m, len(pt))
 	}
 
-	aes, err := aes.NewCipher(key)
+	d.hmac.Write(b[:])
+	d.hmac.Write(pt)
+
+	if eof {
+		return d.processTrailer(pt, eof)
+	}
+
+	return pt, eof, nil
+}
+
+func (d *Decryptor) processTrailer(pt []byte, eof bool) ([]byte, bool, error) {
+	var rd [ed25519.SignatureSize]byte
+
+	_, err := io.ReadFull(d.rd, rd[:])
 	if err != nil {
-		return nil, fmt.Errorf("wrap: %w", err)
+		return nil, false, fmt.Errorf("decrypt: premature EOF while reading trailer: %w", err)
+	}
+
+	if !d.auth {
+		// these are random bytes; ignore em
+		return pt, eof, nil
+	}
+
+	var hmac [sha256.Size]byte
+
+	cksum := d.hmac.Sum(hmac[:0])
+	ss := &Signature{
+		Sig: rd[:],
+	}
+
+	if ok := d.sender.VerifyMessage(cksum, ss); !ok {
+		return nil, eof, ErrBadTrailer
+	}
+
+	return pt, eof, nil
+}
+
+// optionally sign the checksum and encrypt everything
+func (e *Encryptor) addSenderSig(sk *PrivateKey) error {
+	var zero [ed25519.SignatureSize]byte
+	var auth bool
+	sig := zero[:]
+
+	if e.sender != nil {
+		var csum [sha256.Size]byte
+
+		// We capture essential meta-data from the sender; viz:
+		//  - Sender tool version
+		//  - Sender generated curve25519 PK
+		//  - session salt, root key
+
+		h := sha256.New()
+		h.Write([]byte(_Magic))
+		h.Write([]byte{_SigtoolVersion})
+		h.Write(e.Pk)
+		h.Write(e.Salt)
+		h.Write(e.key)
+		cksum := h.Sum(csum[:0])
+
+		xsig, err := e.sender.SignMessage(cksum, "")
+		if err != nil {
+			return fmt.Errorf("wrap: can't sign: %w", err)
+		}
+		sig = xsig.Sig
+		auth = true
+	}
+
+	buf := make([]byte, _AesKeySize+_AEADNonceSize)
+	buf = expand(buf, e.key, e.Salt, []byte(_WrapSender))
+
+	ekey, nonce := buf[:_AesKeySize], buf[_AesKeySize:]
+
+	aes, err := aes.NewCipher(ekey)
+	if err != nil {
+		return fmt.Errorf("senderId: %w", err)
 	}
 
 	ae, err := cipher.NewGCM(aes)
 	if err != nil {
-		return nil, fmt.Errorf("wrap: %w", err)
+		return fmt.Errorf("senderId: %w", err)
 	}
 
-	tagsize := ae.Overhead()
-	nonceSize := ae.NonceSize()
+	outbuf := make([]byte, ed25519.SignatureSize+ae.Overhead())
+	buf = ae.Seal(outbuf[:0], nonce, sig, nil)
 
-	nonce := sha256Slices([]byte(_WrapSenderNonce), salt)[:nonceSize]
-	esig := make([]byte, tagsize+len(sig))
+	e.auth = auth
+	e.Sender = buf
 
-	return ae.Seal(esig[:0], nonce, sig, nil), nil
+	return nil
 }
 
 // unwrap sender's signature using 'key' and extract the signature
 // Optionally, verify the signature using the sender's PK (if provided).
-func (d *Decryptor) verifySender(key []byte, sk *PrivateKey, senderPK *PublicKey) error {
-	aes, err := aes.NewCipher(key)
+func (d *Decryptor) verifySender(key []byte, senderPk *PublicKey) error {
+	outbuf := make([]byte, _AEADNonceSize+_AesKeySize)
+	buf := expand(outbuf, key, d.Salt, []byte(_WrapSender))
+
+	ekey, nonce := buf[:_AesKeySize], buf[_AesKeySize:]
+
+	aes, err := aes.NewCipher(ekey)
 	if err != nil {
 		return fmt.Errorf("unwrap: %w", err)
 	}
@@ -574,31 +713,42 @@ func (d *Decryptor) verifySender(key []byte, sk *PrivateKey, senderPK *PublicKey
 		return fmt.Errorf("unwrap: %w", err)
 	}
 
-	nonceSize := ae.NonceSize()
-	nonce := sha256Slices([]byte(_WrapSenderNonce), d.Salt)[:nonceSize]
-	sig := make([]byte, ed25519.SignatureSize)
-	sig, err = ae.Open(sig[:0], nonce, d.SenderSign, nil)
+	var sigbuf [ed25519.SignatureSize]byte
+	var zero [ed25519.SignatureSize]byte
+
+	sig, err := ae.Open(sigbuf[:0], nonce, d.Sender, nil)
 	if err != nil {
 		return fmt.Errorf("unwrap: can't open sender info: %w", err)
 	}
 
-	var zero [ed25519.SignatureSize]byte
-
 	// Did the sender actually sign anything?
 	if subtle.ConstantTimeCompare(zero[:], sig) == 0 {
+		if senderPk == nil {
+			return ErrNoSenderPK
+		}
+
+		var csum [sha256.Size]byte
+
+		h := sha256.New()
+		h.Write([]byte(_Magic))
+		h.Write([]byte{_SigtoolVersion})
+		h.Write(d.Pk)
+		h.Write(d.Salt)
+		h.Write(key)
+		cksum := h.Sum(csum[:0])
+
+		ss := &Signature{
+			Sig: sig,
+		}
+
+		if ok := senderPk.VerifyMessage(cksum, ss); !ok {
+			return ErrBadSender
+		}
+
 		// we set this to indicate that the sender authenticated themselves;
 		d.auth = true
-
-		if senderPK != nil {
-			ss := &Signature{
-				Sig: sig,
-			}
-
-			if ok := senderPK.VerifyMessage(key, ss); !ok {
-				return fmt.Errorf("unwrap: sender verification failed")
-			}
-		}
 	}
+
 	return nil
 }
 
@@ -606,12 +756,26 @@ func (d *Decryptor) verifySender(key []byte, sk *PrivateKey, senderPK *PublicKey
 //  basically, we do a scalarmult: Ephemeral encryption/decryption SK x receiver PK
 func (e *Encryptor) wrapKey(pk *PublicKey) (*pb.WrappedKey, error) {
 	rxPK := pk.ToCurve25519PK()
-	dkek, err := curve25519.X25519(e.encSK, rxPK)
+	sekrit, err := curve25519.X25519(e.encSK, rxPK)
 	if err != nil {
 		return nil, fmt.Errorf("wrap: %w", err)
 	}
 
-	aes, err := aes.NewCipher(dkek)
+	var shasum [sha256.Size]byte
+
+	rbuf := randBuf(_RxNonceSize)
+
+	h := sha256.New()
+	h.Write(e.Salt)
+	h.Write(rbuf[:])
+	h.Sum(shasum[:0])
+
+	out := make([]byte, _AesKeySize+_RxNonceSize)
+	buf := expand(out[:], sekrit, shasum[:], []byte(_WrapReceiver))
+
+	kek, nonce := buf[:_AesKeySize], buf[_AesKeySize:]
+
+	aes, err := aes.NewCipher(kek)
 	if err != nil {
 		return nil, fmt.Errorf("wrap: %w", err)
 	}
@@ -621,14 +785,10 @@ func (e *Encryptor) wrapKey(pk *PublicKey) (*pb.WrappedKey, error) {
 		return nil, fmt.Errorf("wrap: %w", err)
 	}
 
-	tagsize := ae.Overhead()
-	nonceSize := ae.NonceSize()
-
-	nonceR := sha256Slices([]byte(_WrapReceiverNonce), e.Salt)[:nonceSize]
-	ekey := make([]byte, tagsize+len(e.key))
-
+	ekey := make([]byte, ae.Overhead()+len(e.key))
 	w := &pb.WrappedKey{
-		DKey: ae.Seal(ekey[:0], nonceR, e.key, pk.Pk),
+		DKey:  ae.Seal(ekey[:0], nonce, e.key, pk.Pk),
+		Nonce: rbuf,
 	}
 
 	return w, nil
@@ -638,40 +798,48 @@ func (e *Encryptor) wrapKey(pk *PublicKey) (*pb.WrappedKey, error) {
 // senders ephemeral PublicKey
 func (d *Decryptor) unwrapKey(w *pb.WrappedKey, sk *PrivateKey) ([]byte, error) {
 	ourSK := sk.ToCurve25519SK()
-	dkek, err := curve25519.X25519(ourSK, d.Pk)
+	sekrit, err := curve25519.X25519(ourSK, d.Pk)
 	if err != nil {
 		return nil, fmt.Errorf("unwrap: %w", err)
 	}
 
-	aes, err := aes.NewCipher(dkek)
+	var shasum [sha256.Size]byte
+
+	h := sha256.New()
+	h.Write(d.Salt)
+	h.Write(w.Nonce)
+	h.Sum(shasum[:0])
+
+	out := make([]byte, _AesKeySize+_RxNonceSize)
+	buf := expand(out[:], sekrit, shasum[:], []byte(_WrapReceiver))
+
+	kek, nonce := buf[:_AesKeySize], buf[_AesKeySize:]
+
+	aes, err := aes.NewCipher(kek)
 	if err != nil {
-		return nil, fmt.Errorf("unwrap: %w", err)
+		return nil, fmt.Errorf("wrap: %w", err)
 	}
 
 	ae, err := cipher.NewGCM(aes)
 	if err != nil {
-		return nil, fmt.Errorf("unwrap: %w", err)
+		return nil, fmt.Errorf("wrap: %w", err)
 	}
 
-	// 32 == AES-256 key size
-	want := 32 + ae.Overhead()
+	want := _AesKeySize + ae.Overhead()
 	if len(w.DKey) != want {
 		return nil, fmt.Errorf("unwrap: incorrect decrypt bytes (need %d, saw %d)", want, len(w.DKey))
 	}
 
-	nonceSize := ae.NonceSize()
-
-	nonceR := sha256Slices([]byte(_WrapReceiverNonce), d.Salt)[:nonceSize]
 	pk := sk.PublicKey()
-
-	dkey := make([]byte, 32) // decrypted data decryption key
+	dkey := make([]byte, _AesKeySize) // decrypted data decryption key
 
 	// we indicate incorrect receiver SK by returning a nil key
-	dkey, err = ae.Open(dkey[:0], nonceR, w.DKey, pk.Pk)
+	dkey, err = ae.Open(dkey[:0], nonce, w.DKey, pk.Pk)
 	if err != nil {
 		return nil, nil
 	}
 
+	// we have successfully found the correct recipient
 	return dkey, nil
 }
 
@@ -691,30 +859,14 @@ func fullwrite(buf []byte, wr io.Writer) error {
 	return nil
 }
 
-// make aead nonce from salt, chunk-size and block#
-// First 8 bytes are chunk-size and nonce (in 'ad')
-func makeNonceV2(dest []byte, salt []byte, ad []byte) []byte {
-	n := len(ad)
-	copy(dest, ad)
-	copy(dest[n:], salt)
-	return dest
-}
-
-// make aead nonce from salt, chunk-size and block# for v1
-// This is here for historical documentation purposes
-func makeNonceV1(dest []byte, salt []byte, ad []byte) []byte {
-	h := sha256.New()
-	h.Write(salt)
-	h.Write(ad)
-	return h.Sum(dest[:0])
-}
-
 // generate a KEK from a shared DH key and a Pub Key
-func expand(shared, pk []byte) ([]byte, error) {
-	kek := make([]byte, 32)
-	h := hkdf.New(sha512.New, shared, pk, nil)
-	_, err := io.ReadFull(h, kek)
-	return kek, err
+func expand(out []byte, shared, salt, ad []byte) []byte {
+	h := hkdf.New(sha512.New, shared, salt, ad)
+	_, err := io.ReadFull(h, out)
+	if err != nil {
+		panic(fmt.Sprintf("hkdf: failed to generate %d bytes: %s", len(out), err))
+	}
+	return out
 }
 
 func newSender() (sk, pk []byte, err error) {
@@ -734,6 +886,27 @@ func sha256Slices(v ...[]byte) []byte {
 		h.Write(x)
 	}
 	return h.Sum(nil)[:]
+}
+
+var _debug int = 0
+
+// Enable debugging of this module;
+// level > 0 elicits debug messages on os.Stderr
+func Debug(level int) {
+	_debug = level
+}
+
+func debug(s string, v ...interface{}) {
+	if _debug <= 0 {
+		return
+	}
+
+	z := fmt.Sprintf(s, v...)
+	if n := len(z); z[n-1] != '\n' {
+		z += "\n"
+	}
+	os.Stderr.WriteString(z)
+	os.Stderr.Sync()
 }
 
 // EOF

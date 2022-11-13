@@ -38,3 +38,8 @@ func randRead(b []byte) []byte {
 	}
 	return b
 }
+
+func randBuf(sz int) []byte {
+	b := make([]byte, sz)
+	return randRead(b)
+}
