@@ -152,18 +152,31 @@ recipient can decrypt using their private key.
 
 ### How is the file encryption done?
 The file encryption uses AES-GCM-256 in AEAD mode. The encryption uses
-a random 32-byte AES-256 key. This key is mixed in with the header checksum
-as a safeguard to protect the header against accidental or malicious corruption.
+a random 32-byte AES-256 key. This root key is expanded via
+HKDF-SHA256 into:
+
+   - AES-GCM-256 key (32 bytes)
+   - AES Nonce (12 bytes)
+   - HMAC-SHA-256 key (32 bytes)
+
+The input to the HKDF is the root-key, header-checksum ("salt") and
+a context string.
+
 The input is broken into chunks and each chunk is individually AEAD encrypted.
 The default chunk size is 4MB (4 * 1048576 bytes). Each chunk generates
-its own nonce from a global salt. The nonce is calculated as follows:
-
-        - v1: SHA256 of the salt, the chunk length and the block number.
-        - v2: Last 8 bytes of a 32-byte salt is the big-endian encoding of
-          the chunk-length and block number
-
+its own nonce: the top-4 bytes of the nonce is the chunk-number. The
+actual chunk-length and EOF marker is used as additional data (the
+"AD" of "AEAD").
 The last block has its most-signficant-bit set to 1 to denote EOF. Thus, the
 maximum chunk size is set to 1GB.
+
+We calculate a running hmac of the plaintext blocks; when sender
+identity is present, the final HMAC is signed via the sender's
+Ed25519 key. This signature is appended as the "trailer" (last 64
+bytes of the encrypted file are the Ed25519 signature).
+
+When sender identity is not present, the last bytes are random
+bytes.
 
 ### What is the public-key cryptography in sigtool?
 `sigtool` uses ephemeral Curve25519 keys to generate shared secrets
@@ -173,7 +186,7 @@ data-encryption key in AEAD mode. Thus, each recipient has their own
 individual encrypted key blob - that **only** they can decrypt.
 
 If the sender authenticates the encryption by providing their secret
-key, the data-encryption key is signed via Ed25519 and the signature
+key, the encryption key material is signed via Ed25519 and the signature
 is encrypted (using the data-encryption key) and stored in the
 header. If the sender opts to not authenticate, a "signature" of all
 zeroes is encrypted instead.
@@ -203,7 +216,7 @@ described as a protobuf file (sign/hdr.proto):
         uint32 chunk_size = 1;
         bytes  salt       = 2;
         bytes  pk         = 3;  // sender's ephemeral curve PK
-        bytes  sender_sig = 4;  // ed25519 signature of the key
+        bytes  sender     = 4;  // ed25519 signature of key material
         repeated wrapped_key keys = 5;
     }
 
@@ -213,6 +226,7 @@ described as a protobuf file (sign/hdr.proto):
      */
     message wrapped_key {
         bytes d_key = 1;
+        bytes nonce = 2;
     }
 ```
 
