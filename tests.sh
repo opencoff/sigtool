@@ -3,7 +3,15 @@
 
 # simple round-trip tests to verify the tool
 
-arch=`./build --print-arch`
+# Use cmdline flag to get go-root
+
+GoRoot=$HOME/go
+
+if [ -n "$1" ]; then
+    GoRoot=$1
+fi
+
+arch=`./build --go-root=$GoRoot --print-arch`
 bin=./bin/$arch/sigtool
 Z=`basename $0`
 
