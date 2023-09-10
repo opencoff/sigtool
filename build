@@ -29,8 +29,7 @@ Static=0
 Dryrun=0
 Prodver=""
 Verbose=0
-GoRoot=$HOME/go
-Go=$GoRoot/bin/go
+Go=`which go`
 
 die() {
     echo "$Z: $@" 1>&2
@@ -83,7 +82,7 @@ Options:
     -v, --verbose       Build verbosely (adds "-v" to go tooling) [False]
     --vet               Run "go vet" on modules named on the command line [False]
     --mod               Run "go mod ..." [False]
-    --go-root=G         Use Go in GOROOT 'G' [$GoRoot]
+    --go=G              Use Go in 'G' [$Go]
     -x                  Run in debug/trace mode [False]
     --print-arch        Print the target architecture and exit
 EOF
@@ -217,7 +216,6 @@ done
 
 # let every error abort
 set -e
-Go=$GoRoot/bin/go
 
 # build a tool that runs on the host - if needed.
 hosttool() {
