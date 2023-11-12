@@ -35,8 +35,8 @@ func encrypt(args []string) {
 
 	var outfile string
 	var keyfile string
-	var szstr   string = "128k"
-	var envpw   string
+	var szstr string = "128k"
+	var envpw string
 	var nopw, force bool
 	var blksize uint64
 
@@ -140,7 +140,7 @@ func encrypt(args []string) {
 			mode = ist.Mode()
 		}
 
-		sf, err := sign.NewSafeFile(outfile, force, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
+		sf, err := utils.NewSafeFile(outfile, force, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
 		if err != nil {
 			Die("%s", err)
 		}
@@ -302,7 +302,7 @@ func decrypt(args []string) {
 			mode = ist.Mode()
 		}
 
-		sf, err := sign.NewSafeFile(outfile, force, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
+		sf, err := utils.NewSafeFile(outfile, force, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
 		if err != nil {
 			Die("%s", err)
 		}

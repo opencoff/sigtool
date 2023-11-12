@@ -38,8 +38,9 @@ type Signature struct {
 
 // Sign a prehashed Message; return the signature as opaque bytes
 // Signature is an YAML file:
-//    Comment: source file path
-//    Signature: Ed25519 signature
+//
+//	Comment: source file path
+//	Signature: Ed25519 signature
 func (sk *PrivateKey) SignMessage(ck []byte, comment string) (*Signature, error) {
 	h := sha512.New()
 	h.Write([]byte("sigtool signed message"))

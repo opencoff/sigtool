@@ -213,7 +213,7 @@ Options:
 	var fd io.WriteCloser = os.Stdout
 
 	if outf != "-" {
-		sf, err := sign.NewSafeFile(outf, force, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
+		sf, err := utils.NewSafeFile(outf, force, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
 		if err != nil {
 			Die("can't create sig file: %s", err)
 		}

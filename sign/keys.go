@@ -503,7 +503,7 @@ func (pk *PublicKey) UnmarshalBinary(yml []byte) error {
 // Does MORE than ioutil.WriteFile() - in that it doesn't trash the
 // existing file with an incomplete write.
 func writeFile(fn string, b []byte, ovwrite bool, mode uint32) error {
-	sf, err := NewSafeFile(fn, ovwrite, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, os.FileMode(mode))
+	sf, err := utils.NewSafeFile(fn, ovwrite, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, os.FileMode(mode))
 	if err != nil {
 		return err
 	}

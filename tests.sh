@@ -1,32 +1,44 @@
 #! /usr/bin/env bash
-
-
 # simple round-trip tests to verify the tool
+# Usage:
+#    $0 [bin=/path/to/sigtool] [tmpdir=/path/to/workdir]
 
-# Use cmdline flag to get go-root
-
-GoRoot=$HOME/go
-
-if [ -n "$1" ]; then
-    GoRoot=$1
-fi
-
-arch=`./build --go-root=$GoRoot --print-arch`
-bin=./bin/$arch/sigtool
 Z=`basename $0`
-
-# workdir
-tmpdir=/tmp/sigtool$$
-
 die() {
     echo "$Z: $@" 1>&2
     echo "$Z: Test output in $tmpdir .." 1>&2
     exit 1
 }
 
+# cmd line args processing
+for a in $*; do
+    key=${a%=*}
+    val=${a#*=}
+    case $key in
+        bin)
+            bin=$val
+            ;;
+
+        tmpdir)
+            tmpdir=$val
+            ;;
+
+        *)
+            echo "Ignoring $key .."
+            ;;
+    esac
+done
+
+if [ -z "$bin" ]; then
+    arch=`./build --print-arch`
+    bin=./bin/$arch/sigtool
+
+    [ -x $bin ] || ./build || die "can't find & build sigtool"
+fi
+
+[ -z "$tmpdir" ] && tmpdir=/tmp/sigtool$$
 
 mkdir -p $tmpdir        || die "can't mkdir $tmpdir"
-[ -x $bin ] || ./build  || die "Can't build sigtool for $arch"
 
 # env name for reading the password
 passenv=FOO
@@ -38,9 +50,9 @@ FOO=bar
 #trap "rm -rf $tmpdir" EXIT
 
 bn=$tmpdir/foo
+sig=$tmpdir/$Z.sig
 pk=$bn.pub
 sk=$bn.key
-sig=$tmpdir/$Z.sig
 bn2=$tmpdir/bar
 pk2=$bn2.pub
 sk2=$bn2.key
@@ -76,15 +88,15 @@ rm -f $sig $encout $decout
 
 
 # generate keys
-$bin g -E FOO $bn            || die "can't gen keypair $pk, $sk"
-$bin g -E FOO $bn            && die "overwrote prev keypair"
+$bin g -E FOO $bn                || die "can't gen keypair $pk, $sk"
+$bin g -E FOO $bn 2>/dev/null    && die "overwrote prev keypair"
 $bin g -E FOO --overwrite $bn    || die "can't force gen keypair $pk, $sk"
 $bin g -E FOO $bn2               || die "can't force gen keypair $pk2, $sk2"
 
 # sign and verify
-$bin s -E FOO $sk $0 -o $sig || die "can't sign $0"
-$bin v -q $pk $sig $0        || die "can't verify signature of $0"
-$bin v -q $pk2 $sig $0       && die "bad verification with wrong $pk2"
+$bin s -E FOO $sk $0 -o $sig       || die "can't sign $0"
+$bin v -q $pk $sig $0              || die "can't verify signature of $0"
+$bin v -q $pk2 $sig $0 2>/dev/null && die "bad verification with wrong $pk2"
 
 # encrypt/decrypt
 $bin e -E FOO -o $encout $pk2 $0      || die "can't encrypt to $pk2"
