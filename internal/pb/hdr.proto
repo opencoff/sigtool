@@ -1,13 +1,8 @@
 syntax="proto3";
 
-//import "gogoproto/gogo.proto"
 
-package pb;
+option go_package = "internal/pb";
 
-//option (gogoproto.marshaler_all) = true;
-//option (gogoproto.sizer_all) = true;
-//option (gogoproto.unmarshaler_all) = true;
-//option (gogoproto.goproto_getters_all) = false;
 
 /*
  * Every encrypted file starts with a header describing the

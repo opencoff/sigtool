@@ -4,7 +4,7 @@
 #
 # - it tacks on a version number for use by the individual tools
 # - it supports git and mercurial version#
-# 
+#
 # NB:
 #   o the attempt at decoding dirty repo state for mercurial is
 #     borked. It doesn't know about untracked files
@@ -223,30 +223,64 @@ hosttool() {
     local bindir=$2
     local src=$3
 
-    local p=$(type -P $tool)
-    if [ -n "$p" ]; then
-        echo $p
-        return 0
-    fi
-
-    # from here - we want this dir to find all build artifacts
-    PATH=$PATH:$bindir
-    export PATH
-
     p=$bindir/$tool
     if [ -x $p ]; then
-        echo $p
         return 0
     fi
+
+    local tmpdir=/tmp/$tool.$$
+    mkdir $tmpdir || die "can't make $tmpdir"
+
+    # since go1.20 - install uses env vars to decide where to put
+    # build artifacts. Why are all the google tooling so bloody dev
+    # hostile! WTF is wrong with command line args?!
+    export GOBIN=$bindir
 
     # build it and stash it in the hostdir
     echo "Building tool $tool from $src .."
-    $e $Go get -d      $src || exit 1
-    $e $Go build -o $p $src || exit 1
-    echo $p
+    (
+       cd $tmpdir
+       $e $Go install  $src@latest || die "can't install $tool"
+    )
+    $e rm -rf  $tmpdir
+
     return 0
 }
 
+# protobuf gen
+buildproto() {
+    local pbgo=protoc-gen-go
+    local vtgo=protoc-gen-go-vtproto
+    local vtgo_src=github.com/planetscale/vtprotobuf/cmd/protoc-gen-go-vtproto
+    local pc
+    local args="$*"
+
+    local pgen=$(type -p protoc)
+    local gogen=$(type -p $pbgo)
+    local vt=$Hostbindir/$vtgo
+
+    [ -z $pgen  ] && die "install protoc tools"
+    [ -z $gogen ] && die "install protoc-gen-go"
+
+    # now install the vtproto generator
+    hosttool $vtgo $Hostbindir $vtgo_src
+
+    for f in $args; do
+        local dn=$(dirname $f)
+        local bn=$(basename $f .proto)
+
+
+        $e $pgen  \
+            --go_out=. --plugin protoc-gen-go=$gogen \
+            --go-vtproto_out=. --plugin protoc-gen-go-vtproto="$vt" \
+            --go-vtproto_opt=features=marshal+unmarshal+size  \
+             $f || die "can't generate protobuf output for $f .."
+    done
+
+    return 0
+}
+
+# the rest has to execute in the context of main shell (not funcs)
 
 hostos=$($Go  env GOHOSTOS)      || exit 1
 hostcpu=$($Go env GOHOSTARCH)    || exit 1
@@ -304,6 +338,7 @@ fi
 # This is where build outputs go
 Bindir=$PWD/bin/$cross
 Hostbindir=$PWD/bin/$hostos-$hostcpu
+export PATH=$Hostbindir:$PATH
 
 [ -d $Bindir ]     || mkdir -p $Bindir
 [ -d $Hostbindir ] || mkdir -p $Hostbindir
@@ -335,32 +370,7 @@ fi
 # Do Protobufs if needed
 if [ -n "$Protobufs" ]; then
     set +e
-    slick=$Hostbindir/protoc-gen-gogoslick
-    slicksrc=github.com/gogo/protobuf/protoc-gen-gogoslick
-    for pc in protoc protoc-c; do
-        pc=$(type -p $pc)
-        [ -n "$pc" ] && break
-    done
-
-    [ -z "$pc" ] && die "Need 'protoc' for building .."
-
-    slick=$(hosttool protoc-gen-gogoslick $Hostbindir $slicksrc) || exit 1
-    #if [ ! -f $slick ]; then
-    #   echo "Building $slick .."
-    #   $e go build -o $slick github.com/gogo/protobuf/protoc-gen-gogoslick || exit 1
-    #i
-
-    export PATH=$PATH:$Hostbindir
-
-    for f in $Protobufs; do
-        dn=$(dirname $f)
-        bn=$(basename $f .proto)
-        of=$dn/${bn}.pb.go
-        if [ $f -nt $of ]; then
-            echo "Running $pc .."
-            $e $pc --gogoslick_out=. $f || exit 1
-        fi
-    done
+    buildproto $Protobufs
     set -e
 fi
 
@@ -398,7 +408,7 @@ case $Tool in
 
         echo "Building $Prodver ($rev), $cross $msg .."
 
-        for p in $all; do 
+        for p in $all; do
             if echo $p | grep -q ':' ; then
                 out=${p##*:}
                 dir=${p%%:*}
