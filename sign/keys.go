@@ -25,18 +25,13 @@ import (
 	"crypto/sha256"
 	"crypto/sha512"
 	"encoding/base64"
-	"encoding/binary"
 	"fmt"
-	"hash"
 	"io/ioutil"
 	"math/big"
-	"os"
 
 	Ed "crypto/ed25519"
 	"golang.org/x/crypto/scrypt"
 	"gopkg.in/yaml.v2"
-
-	"github.com/opencoff/go-utils"
 )
 
 // Private Ed25519 key
@@ -498,41 +493,6 @@ func (pk *PublicKey) UnmarshalBinary(yml []byte) error {
 }
 
 // -- Internal Utility Functions --
-
-// Simple function to reliably write data to a file.
-// Does MORE than ioutil.WriteFile() - in that it doesn't trash the
-// existing file with an incomplete write.
-func writeFile(fn string, b []byte, ovwrite bool, mode uint32) error {
-	sf, err := utils.NewSafeFile(fn, ovwrite, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, os.FileMode(mode))
-	if err != nil {
-		return err
-	}
-	defer sf.Abort() // always cleanup on error
-
-	sf.Write(b)
-	return sf.Close()
-}
-
-// Generate file checksum out of hash function h
-func fileCksum(fn string, h hash.Hash) ([]byte, error) {
-	fd, err := os.Open(fn)
-	if err != nil {
-		return nil, fmt.Errorf("can't open %s: %s", fn, err)
-	}
-
-	defer fd.Close()
-
-	sz, err := utils.MmapReader(fd, 0, 0, h)
-	if err != nil {
-		return nil, err
-	}
-
-	var b [8]byte
-	binary.BigEndian.PutUint64(b[:], uint64(sz))
-	h.Write(b[:])
-
-	return h.Sum(nil)[:], nil
-}
 
 func clamp(k []byte) []byte {
 	k[0] &= 248

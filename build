@@ -416,6 +416,13 @@ case $Tool in
                 out=$p
                 dir=$p
             fi
+
+            # Add .exe suffix to out if needed
+            if [ "$GOOS" = "windows" ]; then
+                base=${out%%.exe}
+                out="${base}.exe"
+            fi
+
             echo "   $dir: $out .. "
             $e eval $Go build $vflag -o $Bindir/$out $isuffix "$ldflags" ./$dir || exit 1
         done
