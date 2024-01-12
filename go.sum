@@ -2,8 +2,8 @@ github.com/dchest/bcrypt_pbkdf v0.0.0-20150205184540-83f37f9c154a h1:saTgr5tMLFn
 github.com/dchest/bcrypt_pbkdf v0.0.0-20150205184540-83f37f9c154a/go.mod h1:Bw9BbhOJVNR+t0jCqx2GC6zv0TGBsShs56Y3gfSCvl0=
 github.com/google/go-cmp v0.5.5 h1:Khx7svrCpmxxtHBq5j2mp/xVjsi8hQMfNLvJFAlrGgU=
 github.com/google/go-cmp v0.5.5/go.mod h1:v8dTdLbMG2kIc/vJvl+f65V22dbkXbowE6jgT/gNBxE=
-github.com/opencoff/go-mmap v0.1.1 h1:Z1B8CECT+5Tf6tcqWgf2BR0ufFnQeziNlcI8CzCt4o0=
-github.com/opencoff/go-mmap v0.1.1/go.mod h1:+UjRnKQ3l5dLqSNAczz7zKI8LJ7mBhJhaSqU4S91tFs=
+github.com/opencoff/go-mmap v0.1.2 h1:2yrYleq0x9cBruDRTafs7GZt4tCYmsUlvyN77HnY9hA=
+github.com/opencoff/go-mmap v0.1.2/go.mod h1:+UjRnKQ3l5dLqSNAczz7zKI8LJ7mBhJhaSqU4S91tFs=
 github.com/opencoff/go-utils v0.9.0 h1:qJcRsjLHADmej3/BkH6cLX3pxapLwHf9uSN0E7vvZf4=
 github.com/opencoff/go-utils v0.9.0/go.mod h1:IHjYSeM+bOKhCD2rBEba4/0C7Apko+KZKKyFgDF43Sc=
 github.com/opencoff/pflag v1.0.6-sh1 h1:6RO8GgnpH928yu6earGDD01FnFT//bDJ1hCovcVVqY4=
