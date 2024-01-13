@@ -369,6 +369,29 @@ func MakePublicKey(yml []byte) (*PublicKey, error) {
 	return &pk, nil
 }
 
+// Make a public key from a string
+func MakePublicKeyFromString(s string) (*PublicKey, error) {
+	// first try to decode it as a openssh key
+	if pk2, err := parseEncPubKey([]byte(s), "command-line-pk"); err == nil {
+		return pk2, nil
+	}
+
+	// Now try to decode as an sigtool key
+	b64 := base64.StdEncoding.DecodeString
+
+	pkb, err := b64(s)
+	if err != nil {
+		return nil, err
+	}
+
+	var pk PublicKey
+	err = makePublicKeyFromBytes(&pk, pkb)
+	if err != nil {
+		return nil, err
+	}
+	return &pk, nil
+}
+
 func makePublicKeyFromBytes(pk *PublicKey, b []byte) error {
 	if len(b) != 32 {
 		return fmt.Errorf("public key is malformed (len %d!)", len(b))

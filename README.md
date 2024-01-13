@@ -101,6 +101,10 @@ e.g., to verify the signature of *archive.tar.gz* against
     sigtool verify /tmp/testkey.pub archive.sig archive.tar.gz
 
 
+You can also pass a public key as a string (instead of a file):
+
+    sigtool verify iF84Dymq/bAEnUMK6DRIHWAQDRD8FwDDDfsgFfzdjWM= archive.sig archive.tar.gz
+
 Note that signing and verifying can also work with OpenSSH ed25519
 keys.
 

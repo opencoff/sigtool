@@ -13,7 +13,7 @@
 #
 # License: GPLv2
 #
-Progs=".:sigtool"
+Progs="src:sigtool"
 
 # Relative path to protobuf sources
 # e.g. src/foo/a.proto
