@@ -140,7 +140,11 @@ func encrypt(args []string) {
 			mode = ist.Mode()
 		}
 
-		sf, err := utils.NewSafeFile(outfile, force, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
+		var opts uint32
+		if force {
+			opts |= utils.OPT_OVERWRITE
+		}
+		sf, err := utils.NewSafeFile(outfile, opts, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
 		if err != nil {
 			Die("%s", err)
 		}
@@ -302,7 +306,11 @@ func decrypt(args []string) {
 			mode = ist.Mode()
 		}
 
-		sf, err := utils.NewSafeFile(outfile, force, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
+		var opts uint32
+		if force {
+			opts |= utils.OPT_OVERWRITE
+		}
+		sf, err := utils.NewSafeFile(outfile, opts, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
 		if err != nil {
 			Die("%s", err)
 		}

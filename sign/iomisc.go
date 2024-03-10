@@ -26,11 +26,19 @@ import (
 // Does MORE than ioutil.WriteFile() - in that it doesn't trash the
 // existing file with an incomplete write.
 func writeFile(fn string, b []byte, ovwrite bool, mode uint32) error {
-	sf, err := utils.NewSafeFile(fn, ovwrite, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, os.FileMode(mode))
+	var opts uint32
+	if ovwrite {
+		opts |= utils.OPT_OVERWRITE
+	}
+	sf, err := utils.NewSafeFile(fn, opts, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, os.FileMode(mode))
 	if err != nil {
 		return err
 	}
-	sf.Write(b)
+	defer sf.Abort()
+	if _, err = sf.Write(b); err != nil {
+		return err
+	}
+
 	return sf.Close()
 }
 

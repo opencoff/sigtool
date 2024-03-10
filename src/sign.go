@@ -68,7 +68,11 @@ Options:
 	var fd io.WriteCloser = os.Stdout
 
 	if outf != "-" {
-		sf, err := utils.NewSafeFile(outf, force, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
+		var opts uint32
+		if force {
+			opts |= utils.OPT_OVERWRITE
+		}
+		sf, err := utils.NewSafeFile(outf, opts, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
 		if err != nil {
 			Die("can't create sig file: %s", err)
 		}
