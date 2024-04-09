@@ -28,6 +28,7 @@ PWD=`pwd`
 Static=0
 Dryrun=0
 Prodver=""
+Repover=""
 Verbose=0
 Go=`which go`
 
@@ -47,10 +48,48 @@ case $BASH_VERSION in
         ;;
 esac
 
+getvcs_version() {
+    local rev=
+    local prodv=
 
+    if [ -d "./.hg" ]; then
+        local xrev=$(hg id --id) || exit 1
+        local brev=${xrev%+}
+        if [ "$brev" != "$xrev" ]; then
+            rev="hg:${brev}-dirty"
+        else
+            rev="hg:${brev}"
+        fi
+        prodv=$(hg log -r "branch(stable) and tag()" -T "{tags}\n" | sort -V | tail -1)
+    elif [ -d "./.git" ]; then
+        local xrev=$(git describe --always --dirty --long --abbrev=12) || exit 1
+        rev="git:$xrev"
+        prodv=$(git tag --list | sort -V | tail -1)
+    else
+        rev="UNKNOWN-VER"
+        warn "Can't find version info"
+    fi
+
+    [ -n "$Prodver" ] && prodv=$Prodver
+
+    echo "$rev $prodv"
+    return 0
+}
+
+read -r Repover Prodver <<< $(getvcs_version)
 
 
 usage() {
+    declare -a progv=($Progs)
+    declare n=${#progv[@]}
+    declare pstr=
+
+    for ((i=0; i < n; i++)); do
+        local ent=${progv[$i]}
+        local dir=${ent%%:*}
+        local tool=${ent##*:}
+        pstr=$(printf "$pstr\n\t%s $Prodver $Repover (from ./%s)" $tool $dir)
+    done
 
     cat <<EOF
 $0 - A Go production build tool that adds git-repository information,
@@ -67,7 +106,7 @@ Usage: $0
 Where OS-ARCH denotes one of the valid OS, ARCH combinations supported by 'go'.
 And, PROGS is one or more go programs.
 
-With no arguments, $0 builds: $Progs (source in ./src/)
+With no arguments, $0 builds: $pstr
 
 The repository's latest tag is used as the default version of the software being
 built.
@@ -280,6 +319,7 @@ buildproto() {
     return 0
 }
 
+
 # the rest has to execute in the context of main shell (not funcs)
 
 hostos=$($Go  env GOHOSTOS)      || exit 1
@@ -343,29 +383,6 @@ export PATH=$Hostbindir:$PATH
 [ -d $Bindir ]     || mkdir -p $Bindir
 [ -d $Hostbindir ] || mkdir -p $Hostbindir
 
-# Get git/hg version info for the build
-if [ -d "./.hg" ]; then
-    xrev=$(hg id --id) || exit 1
-    brev=${xrev%+}
-    if [ "$brev" != "$xrev" ]; then
-        rev="hg:${brev}-dirty"
-    else
-        rev="hg:${brev}"
-    fi
-    if [ -z "$Prodver" ]; then
-        Prodver=$(hg log -r "branch(stable) and tag()" -T "{tags}\n" | tail -1)
-    fi
-elif [ -d "./.git" ]; then
-    xrev=$(git describe --always --dirty --long --abbrev=12) || exit 1
-    rev="git:$xrev"
-    if [ -z "$Prodver" ]; then
-        Prodver=$(git tag --list | tail -1)
-    fi
-else
-    rev="UNKNOWN-VER"
-    echo "$0: Can't find version info" 1>&2
-fi
-
 
 # Do Protobufs if needed
 if [ -n "$Protobufs" ]; then
@@ -374,7 +391,8 @@ if [ -n "$Protobufs" ]; then
     set -e
 fi
 
-repover="main.RepoVersion=$rev"
+# Get git/hg version info for the build
+repover="main.RepoVersion=$Repover"
 prodver="main.ProductVersion=$Prodver"
 date="main.Buildtime=`date -u '+%Y-%m-%dT%H:%M.%SZ'`"
 ldflags="-ldflags \"-X $repover -X $prodver -X $date $ldflags\""
@@ -406,7 +424,7 @@ case $Tool in
             all="$@"
         fi
 
-        echo "Building $Prodver ($rev), $cross $msg .."
+        echo "Building $Prodver ($Repover), $cross $msg .."
 
         for p in $all; do
             if echo $p | grep -q ':' ; then
