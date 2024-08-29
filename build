@@ -19,6 +19,7 @@ Progs="src:sigtool"
 # e.g. src/foo/a.proto
 Protobufs="internal/pb/hdr.proto"
 
+#set -x
 
 # -- DO NOT CHANGE ANYTHING AFTER THIS --
 
@@ -31,6 +32,7 @@ Prodver=""
 Repover=""
 Verbose=0
 Go=`which go`
+Bindir=$PWD/bin
 
 die() {
     echo "$Z: $@" 1>&2
@@ -51,8 +53,14 @@ esac
 getvcs_version() {
     local rev=
     local prodv=
+    local git=`which git`
+    local hg=`which hg`
 
-    if [ -d "./.hg" ]; then
+    if [ -n "$git" ]; then
+        local xrev=$(git describe --always --dirty --long --abbrev=12) || exit 1
+        rev="git:$xrev"
+        prodv=$(git tag --list | sort -V | tail -1)
+    elif [ -n "$hg" ]; then
         local xrev=$(hg id --id) || exit 1
         local brev=${xrev%+}
         if [ "$brev" != "$xrev" ]; then
@@ -61,13 +69,9 @@ getvcs_version() {
             rev="hg:${brev}"
         fi
         prodv=$(hg log -r "branch(stable) and tag()" -T "{tags}\n" | sort -V | tail -1)
-    elif [ -d "./.git" ]; then
-        local xrev=$(git describe --always --dirty --long --abbrev=12) || exit 1
-        rev="git:$xrev"
-        prodv=$(git tag --list | sort -V | tail -1)
     else
+        warn "no git or hg found; can't get VCS info"
         rev="UNKNOWN-VER"
-        warn "Can't find version info"
     fi
 
     [ -n "$Prodver" ] && prodv=$Prodver
@@ -96,8 +100,6 @@ $0 - A Go production build tool that adds git-repository information,
 product version, build-timestamp etc. It supports cross-compilation,
 static linking and generating protobuf output.
 
-If needed, it uses the gogo-slick protobuf compiler [github.com/gogo/protobuf].
-
 Build output is in bin/\$OS-\$CPU for a given OS, CPU combination.
 
 Usage: $0
@@ -109,10 +111,11 @@ And, PROGS is one or more go programs.
 With no arguments, $0 builds: $pstr
 
 The repository's latest tag is used as the default version of the software being
-built.
+built. The current repository version is $Repover.
 
 Options:
     -h, --help          Show this help message and quit
+    -b D, --bindir=D    Put the binaries in the directory 'D' [$Bindir]
     -s, --static        Build a statically linked binary [False]
     -V N, --version=N   Use 'N' as the product version string [$Prodver]
     -a X, --arch=X      Cross compile for OS-CPU 'X' [$hostos-$hostcpu]
@@ -193,6 +196,14 @@ do
 
         -a|--arch)
             ac_prev=Arch
+            ;;
+
+        -b|--bindir)
+            ac_prev=Bindir
+            ;;
+
+        --bindir=*)
+            Bindir=$ac_optarg
             ;;
 
         --version=*)
@@ -376,11 +387,11 @@ fi
 
 
 # This is where build outputs go
-Bindir=$PWD/bin/$cross
-Hostbindir=$PWD/bin/$hostos-$hostcpu
+Outdir=$Bindir/$cross
+Hostbindir=$Bindir/$hostos-$hostcpu
 export PATH=$Hostbindir:$PATH
 
-[ -d $Bindir ]     || mkdir -p $Bindir
+[ -d $Outdir ]     || mkdir -p $Outdir
 [ -d $Hostbindir ] || mkdir -p $Hostbindir
 
 
@@ -395,7 +406,7 @@ fi
 repover="main.RepoVersion=$Repover"
 prodver="main.ProductVersion=$Prodver"
 date="main.Buildtime=`date -u '+%Y-%m-%dT%H:%M.%SZ'`"
-ldflags="-ldflags \"-X $repover -X $prodver -X $date $ldflags\""
+ldflags="-ldflags \"-X $repover -X $prodver -X $date $ldflags -buildid=\""
 vflag=""
 
 [ $Verbose -gt 0 ] && vflag="-v"
@@ -424,6 +435,8 @@ case $Tool in
             all="$@"
         fi
 
+        [ -z "$all" ] && die "No programs specified. Try '$Z --help'"
+
         echo "Building $Prodver ($Repover), $cross $msg .."
 
         for p in $all; do
@@ -442,7 +455,7 @@ case $Tool in
             fi
 
             echo "   $dir: $out .. "
-            $e eval $Go build $vflag -o $Bindir/$out $isuffix "$ldflags" ./$dir || exit 1
+            $e eval $Go build $vflag -trimpath -o $Outdir/$out $isuffix "$ldflags" ./$dir || exit 1
         done
         ;;
 esac

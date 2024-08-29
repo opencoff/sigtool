@@ -7,6 +7,7 @@ require (
 	github.com/opencoff/go-mmap v0.1.2
 	github.com/opencoff/go-utils v0.9.3
 	github.com/opencoff/pflag v1.0.6-sh1
+	github.com/planetscale/vtprotobuf v0.6.0
 	golang.org/x/crypto v0.21.0
 	google.golang.org/protobuf v1.33.0
 	gopkg.in/yaml.v2 v2.4.0

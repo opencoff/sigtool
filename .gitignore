@@ -31,4 +31,4 @@ sigtool
 *.pub
 *.key
 *.sig
-
+releases/*
