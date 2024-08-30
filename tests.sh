@@ -84,8 +84,8 @@ $bin s --no-password $ssk1 -o $sig $0       || die "can't sign with $ssk1"
 $bin v -q $spk1 $sig $0                     || die "can't verify with $spk2"
 $bin v -q $spk1_str $sig $0                 || die "can't verify with $spk2_str"
 
-$bin e --no-password -o $encout $spk2 $0         || die "can't encrypt to $spk2 with $ssk1"
-$bin d --no-password -o $decout $ssk2 $encout    || die "can't decrypt with $ssk2"
+$bin e --no-password -o $encout $spk2 $0       || die "can't encrypt to $spk2 with $ssk1"
+$bin d --no-password -o $decout $ssk2 $encout  || die "can't decrypt with $ssk2"
 
 # cleanup state
 rm -f $sig $encout $decout
@@ -104,8 +104,8 @@ pk2_str=$(cat $pk2 | grep 'pk:' | sed -e 's/^pk: //g')
 $bin s -E FOO $sk $0 -o $sig            || die "can't sign $0"
 $bin v -q $pk $sig $0                   || die "can't verify signature of $0"
 $bin v -q $pk_str $sig $0               || die "can't verify signature of $0"
-$bin v -q $pk2 $sig $0 2>/dev/null && die "bad verification with wrong $pk2"
-$bin v -q $pk2_str $sig $0 2>/dev/null && die "bad verification with wrong $pk2"
+$bin v -q $pk2 $sig $0 2>/dev/null      && die "bad verification with wrong $pk2"
+$bin v -q $pk2_str $sig $0 2>/dev/null  && die "bad verification with wrong $pk2"
 
 # encrypt/decrypt
 $bin e -E FOO -o $encout $pk2 $0      || die "can't encrypt to $pk2"

@@ -405,8 +405,7 @@ fi
 # Get git/hg version info for the build
 repover="main.RepoVersion=$Repover"
 prodver="main.ProductVersion=$Prodver"
-date="main.Buildtime=`date -u '+%Y-%m-%dT%H:%M.%SZ'`"
-ldflags="-ldflags \"-X $repover -X $prodver -X $date $ldflags -buildid=\""
+ldflags="-ldflags \"-X $repover -X $prodver $ldflags -buildid=\""
 vflag=""
 
 [ $Verbose -gt 0 ] && vflag="-v"
