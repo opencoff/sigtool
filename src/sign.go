@@ -18,6 +18,7 @@ import (
 	"io"
 	"os"
 
+	"github.com/opencoff/go-fio"
 	"github.com/opencoff/go-utils"
 	flag "github.com/opencoff/pflag"
 	"github.com/opencoff/sigtool/sign"
@@ -70,9 +71,9 @@ Options:
 	if outf != "-" {
 		var opts uint32
 		if force {
-			opts |= utils.OPT_OVERWRITE
+			opts |= fio.OPT_OVERWRITE
 		}
-		sf, err := utils.NewSafeFile(outf, opts, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
+		sf, err := fio.NewSafeFile(outf, opts, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
 		if err != nil {
 			Die("can't create sig file: %s", err)
 		}

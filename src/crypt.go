@@ -20,6 +20,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/opencoff/go-fio"
 	"github.com/opencoff/go-utils"
 	flag "github.com/opencoff/pflag"
 	"github.com/opencoff/sigtool/sign"
@@ -142,9 +143,9 @@ func encrypt(args []string) {
 
 		var opts uint32
 		if force {
-			opts |= utils.OPT_OVERWRITE
+			opts |= fio.OPT_OVERWRITE
 		}
-		sf, err := utils.NewSafeFile(outfile, opts, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
+		sf, err := fio.NewSafeFile(outfile, opts, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
 		if err != nil {
 			Die("%s", err)
 		}
@@ -308,9 +309,9 @@ func decrypt(args []string) {
 
 		var opts uint32
 		if force {
-			opts |= utils.OPT_OVERWRITE
+			opts |= fio.OPT_OVERWRITE
 		}
-		sf, err := utils.NewSafeFile(outfile, opts, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
+		sf, err := fio.NewSafeFile(outfile, opts, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
 		if err != nil {
 			Die("%s", err)
 		}

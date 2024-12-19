@@ -16,8 +16,8 @@ package sign
 import (
 	"encoding/binary"
 	"fmt"
+	"github.com/opencoff/go-fio"
 	"github.com/opencoff/go-mmap"
-	"github.com/opencoff/go-utils"
 	"hash"
 	"os"
 )
@@ -28,9 +28,9 @@ import (
 func writeFile(fn string, b []byte, ovwrite bool, mode uint32) error {
 	var opts uint32
 	if ovwrite {
-		opts |= utils.OPT_OVERWRITE
+		opts |= fio.OPT_OVERWRITE
 	}
-	sf, err := utils.NewSafeFile(fn, opts, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, os.FileMode(mode))
+	sf, err := fio.NewSafeFile(fn, opts, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, os.FileMode(mode))
 	if err != nil {
 		return err
 	}
