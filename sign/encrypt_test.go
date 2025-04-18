@@ -373,7 +373,7 @@ func TestStreamIO(t *testing.T) {
 }
 
 // Test stream write and read with small sizes
-func TestSmallSizeStreamIO(t *testing.T) {
+func TestStreamIOSmallSize(t *testing.T) {
 	assert := newAsserter(t)
 
 	receiver, err := NewPrivateKey()

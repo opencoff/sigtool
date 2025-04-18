@@ -108,6 +108,7 @@ type encReader struct {
 	unread []byte
 	d      *Decryptor
 	blk    uint32
+	err    error
 }
 
 var _ io.Reader = &encReader{}
@@ -131,8 +132,24 @@ func (d *Decryptor) NewStreamReader() (io.Reader, error) {
 
 // Read implements io.Reader interface
 func (r *encReader) Read(b []byte) (int, error) {
-	if r.d.eof && len(r.unread) == 0 {
-		return 0, io.EOF
+	if r.err != nil {
+		return 0, r.err
+	}
+
+	if len(r.unread) == 0 {
+		if r.d.eof {
+			r.err = io.EOF
+			return 0, io.EOF
+		}
+
+		buf, eof, err := r.d.decrypt(r.blk)
+		if err != nil {
+			r.err = err
+			return 0, err
+		}
+		r.d.eof = eof
+		r.unread = buf
+		r.blk++
 	}
 
 	if len(r.unread) > 0 {
@@ -141,22 +158,6 @@ func (r *encReader) Read(b []byte) (int, error) {
 		return n, nil
 	}
 
-	buf, eof, err := r.d.decrypt(r.blk)
-	if err != nil {
-		return 0, err
-	}
-
-	r.blk += 1
-
-	n := copy(b, buf)
-	buf = buf[n:]
-
-	copy(r.buf, buf)
-	r.unread = r.buf[:len(buf)]
-
-	if eof {
-		r.d.eof = true
-	}
-
-	return n, nil
+	r.err = io.EOF
+	return 0, r.err
 }
