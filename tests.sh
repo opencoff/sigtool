@@ -29,12 +29,9 @@ for a in $*; do
     esac
 done
 
-if [ -z "$bin" ]; then
-    arch=`./build --print-arch`
-    bin=./bin/$arch/sigtool
-
-    [ -x $bin ] || ./build || die "can't find & build sigtool"
-fi
+arch=`./build --print-arch`
+bin=./bin/$arch/sigtool
+./build || die "can't find & build sigtool"
 
 [ -z "$tmpdir" ] && tmpdir=/tmp/sigtool$$
 

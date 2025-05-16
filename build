@@ -36,7 +36,13 @@ Verbose=0
 Go=`which go`
 Arch=
 Bindir=$PWD/bin
-e=
+#e=echo
+
+#set -x
+# Go module proxy URL
+GoModProxy="https://proxy.golang.org"
+ProtobufRepo="google.golang.org/protobuf"
+VTProtoRepo="github.com/planetscale/vtprotobuf"
 
 die() {
     echo "$Z: $@" 1>&2
@@ -53,6 +59,29 @@ case $BASH_VERSION in
     *) die "I need bash 4.x to run!"
         ;;
 esac
+
+# Fetch the latest version of the given tool
+gettool_version() {
+    local mod=$1; shift
+    local jq=`which jq`
+    local curl=`which curl`
+
+    [ -z "$jq" ]   && die "can't find jq; please install it"
+    [ -z "$curl" ] && die "can't find curl; please install it"
+
+    local ver=$($curl -s "${GoModProxy}/${mod}/@latest" | $jq .Version | tr -d '"' ) || die "can't run curl"
+    echo $ver
+}
+
+show_tool_versions() {
+    local proto=`gettool_version $ProtobufRepo`
+    local vt=`gettool_version $VTProtoRepo`
+
+    echo "$ProtobufRepo: $proto"
+    echo "$VTProtoRepo: $vt"
+    exit 0
+}
+
 
 getvcs_version() {
     local rev=
@@ -126,6 +155,7 @@ Options:
     -n, --dry-run       Dry-run, don't actually build anything [False]
     -t, --test          Run "go test" on modules named on the command line [False]
     -v, --verbose       Build verbosely (adds "-v" to go tooling) [False]
+    --check-tools       Show the latest version of the protobuf tools
     --vet               Run "go vet" on modules named on the command line [False]
     --mod               Run "go mod ..." [False]
     --go=G              Use Go in 'G' [$Go]
@@ -254,6 +284,10 @@ do
             Printarch=1
             ;;
 
+        --check-tools)
+            show_tool_versions
+            ;;
+
         *) # first non option terminates option processing.
            # we gather all remaining args and bundle them up.
             args="$args $ac_option"
@@ -272,15 +306,18 @@ done
 set -e
 
 # build a tool that runs on the host - if needed.
-hosttool() {
+hosttool_old() {
     local tool=$1
     local bindir=$2
     local src=$3
+    local ver=$4
 
     p=$bindir/$tool
     if [ -x $p ]; then
         return 0
     fi
+
+    [ -z "$ver" ] && ver="@latest"
 
     local tmpdir=/tmp/$tool.$$
     mkdir $tmpdir || die "can't make $tmpdir"
@@ -294,9 +331,27 @@ hosttool() {
     echo "Building tool $tool from $src .."
     (
        cd $tmpdir
-       $e $Go install  $src@latest || die "can't install $tool"
+       $e $Go install  $src@$ver || die "can't install $tool [$ver]"
     )
     $e rm -rf  $tmpdir
+
+    return 0
+}
+
+hosttool() {
+    local tool=$1
+    local bindir=$2
+    local src=$3
+
+    p=$bindir/$tool
+    if [ -x $p ]; then
+        return 0
+    fi
+
+    # build per the go.mod file
+    # build it and stash it in the hostdir
+    echo "Building tool $tool from $src .."
+    $e $Go build -o $p $src || die "can't build $tool"
 
     return 0
 }
@@ -304,33 +359,28 @@ hosttool() {
 # protobuf gen
 buildproto() {
     local pbgo=protoc-gen-go
-    local pbgo_src=google.golang.org/protobuf/cmd/protoc-gen-go
     local vtgo=protoc-gen-go-vtproto
-    local vtgo_src=github.com/planetscale/vtprotobuf/cmd/protoc-gen-go-vtproto
+    local pbgo_src="$ProtobufRepo/cmd/$pbgo"
+    local vtgo_src="$VTProtoRepo/cmd/$vtgo"
     local pc
     local args="$*"
 
     local pgen=$(type -p protoc)
-    local gogen=$(type -p $pbgo)
-    local vt=$Hostbindir/$vtgo
 
     [ -z $pgen  ] && die "install protoc tools (protobuf on macports)"
 
-    # install protoc-gen-go if needed
-    if [ -z $gogen ]; then
-        hosttool $pbgo $Hostbindir $pbgo_src
-        gogen=$(type -p $pbgo)
-    fi
+    local gogen=$Hostbindir/$pbgo
+    local vt=$Hostbindir/$vtgo
 
-    # now install the vtproto generator
-    if [ ! -x $vt ]; then
-        hosttool $vtgo $Hostbindir $vtgo_src
-    fi
+    # install protoc-gen-go and vtproto tools locally; we want to
+    # pin these tools to the specific versions in go.mod
+    # tools.go captures the essential tooling dependency in go.mod
+    [ -x $gogen ] || hosttool $pbgo $Hostbindir $pbgo_src
+    [ -x $vt ]    || hosttool $vtgo $Hostbindir $vtgo_src
 
     for f in $args; do
         local dn=$(dirname $f)
         local bn=$(basename $f .proto)
-
 
         $e $pgen  \
             --go_out=. --plugin protoc-gen-go=$gogen \
