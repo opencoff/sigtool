@@ -44,6 +44,9 @@ GoModProxy="https://proxy.golang.org"
 ProtobufRepo="google.golang.org/protobuf"
 VTProtoRepo="github.com/planetscale/vtprotobuf"
 
+# tools.go definition
+Tools_go=./tools.go
+
 die() {
     echo "$Z: $@" 1>&2
     exit 0
@@ -61,7 +64,7 @@ case $BASH_VERSION in
 esac
 
 # Fetch the latest version of the given tool
-gettool_version() {
+gettool_version_latest() {
     local mod=$1; shift
     local jq=`which jq`
     local curl=`which curl`
@@ -74,11 +77,18 @@ gettool_version() {
 }
 
 show_tool_versions() {
-    local proto=`gettool_version $ProtobufRepo`
-    local vt=`gettool_version $VTProtoRepo`
+    # Lets find the latest versions
+    local pb_latest=$(gettool_version_latest $ProtobufRepo)
+    local vt_latest=$(gettool_version_latest $VTProtoRepo)
 
-    echo "$ProtobufRepo: $proto"
-    echo "$VTProtoRepo: $vt"
+    set -- $($Go list -m $ProtobufRepo)
+    local pb_mod=$2
+
+    set -- $($Go list -m $VTProtoRepo)
+    local vt_mod=$2
+
+    echo "$ProtobufRepo: $pb_mod [latest $pb_latest]"
+    echo "$VTProtoRepo: $vt_mod [latest $vt_latest]"
     exit 0
 }
 
@@ -306,38 +316,6 @@ done
 set -e
 
 # build a tool that runs on the host - if needed.
-hosttool_old() {
-    local tool=$1
-    local bindir=$2
-    local src=$3
-    local ver=$4
-
-    p=$bindir/$tool
-    if [ -x $p ]; then
-        return 0
-    fi
-
-    [ -z "$ver" ] && ver="@latest"
-
-    local tmpdir=/tmp/$tool.$$
-    mkdir $tmpdir || die "can't make $tmpdir"
-
-    # since go1.20 - install uses env vars to decide where to put
-    # build artifacts. Why are all the google tooling so bloody dev
-    # hostile! WTF is wrong with command line args?!
-    export GOBIN=$bindir
-
-    # build it and stash it in the hostdir
-    echo "Building tool $tool from $src .."
-    (
-       cd $tmpdir
-       $e $Go install  $src@$ver || die "can't install $tool [$ver]"
-    )
-    $e rm -rf  $tmpdir
-
-    return 0
-}
-
 hosttool() {
     local tool=$1
     local bindir=$2
@@ -368,6 +346,22 @@ buildproto() {
     local pgen=$(type -p protoc)
 
     [ -z $pgen  ] && die "install protoc tools (protobuf on macports)"
+
+    # Check to see if tools.go is present
+    if [ ! -f $Tools_go ]; then
+        cat <<_EOF > $Tools_go
+//go:build tools
+
+package tools
+
+import (
+    _ "google.golang.org/protobuf/cmd/protoc-gen-go"
+    _ "github.com/planetscale/vtprotobuf/cmd/protoc-gen-go-vtproto"
+)
+_EOF
+
+        $e $Go mod tidy
+    fi
 
     local gogen=$Hostbindir/$pbgo
     local vt=$Hostbindir/$vtgo
