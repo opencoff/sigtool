@@ -317,19 +317,15 @@ set -e
 
 # build a tool that runs on the host - if needed.
 hosttool() {
-    local tool=$1
-    local bindir=$2
-    local src=$3
+    local out=$1
+    local src=$2
 
-    p=$bindir/$tool
-    if [ -x $p ]; then
-        return 0
-    fi
+    local name="$(basename $out)"
 
     # build per the go.mod file
     # build it and stash it in the hostdir
-    echo "Building tool $tool from $src .."
-    $e $Go build -o $p $src || die "can't build $tool"
+    echo "Building $name from $src .."
+    $e $Go build -o $out $src || die "can't build $name"
 
     return 0
 }
@@ -364,21 +360,21 @@ _EOF
     fi
 
     local gogen=$Hostbindir/$pbgo
-    local vt=$Hostbindir/$vtgo
+    local vtgen=$Hostbindir/$vtgo
 
     # install protoc-gen-go and vtproto tools locally; we want to
     # pin these tools to the specific versions in go.mod
     # tools.go captures the essential tooling dependency in go.mod
-    [ -x $gogen ] || hosttool $pbgo $Hostbindir $pbgo_src
-    [ -x $vt ]    || hosttool $vtgo $Hostbindir $vtgo_src
+    [ -x $gogen ] || hosttool $gogen $pbgo_src
+    [ -x $vtgen ] || hosttool $vtgen $vtgo_src
 
     for f in $args; do
         local dn=$(dirname $f)
         local bn=$(basename $f .proto)
 
         $e $pgen  \
-            --go_out=. --plugin protoc-gen-go=$gogen \
-            --go-vtproto_out=. --plugin protoc-gen-go-vtproto="$vt" \
+            --go_out=. --plugin protoc-gen-go="$gogen" \
+            --go-vtproto_out=. --plugin protoc-gen-go-vtproto="$vtgen" \
             --go-vtproto_opt=features=marshal+unmarshal+size  \
              $f || die "can't generate protobuf output for $f .."
     done
