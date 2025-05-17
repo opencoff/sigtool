@@ -107,7 +107,7 @@ getvcs_version() {
         local xrev=$(hg id --id) || exit 1
         local brev=${xrev%+}
         if [ "$brev" != "$xrev" ]; then
-            rev="hg:${brev}-dirty"
+            rev="hg:${brev}+dirty"
         else
             rev="hg:${brev}"
         fi
@@ -518,7 +518,7 @@ case $Tool in
             outbin=$Outdir/$out
             oldbin=$Outdir/$old
             [ -f $outbin ] && mv -f $outbin $oldbin
-            $e eval $Go build $vflag -trimpath -buildvcs=false -o $outbin $isuffix "$ldflags" ./$dir || exit 1
+            $e eval $Go build $vflag -trimpath -buildvcs=true -o $outbin $isuffix "$ldflags" ./$dir || exit 1
         done
         ;;
 esac

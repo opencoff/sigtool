@@ -39,6 +39,10 @@ func main() {
 
 	if ver {
 		fmt.Printf("%s - %s [%s]\n", Z, ProductVersion, RepoVersion)
+
+		if bi, ok := ReadBuildInfo(); ok {
+			fmt.Printf("%s", bi.String())
+		}
 		os.Exit(0)
 	}
 
