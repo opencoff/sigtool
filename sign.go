@@ -12,7 +12,6 @@
 // suitability for any purpose.
 
 // This file implements:
-//   - key generation, and key I/O
 //   - sign/verify of files and byte strings
 
 package sigtool
@@ -21,46 +20,40 @@ import (
 	"crypto"
 	"crypto/rand"
 	"crypto/sha3"
-	"crypto/subtle"
+	"crypto/sha512"
 	"encoding/base64"
 	"fmt"
 	"hash"
-	"io/ioutil"
+	"strings"
 
 	Ed "crypto/ed25519"
-	"gopkg.in/yaml.v2"
 )
 
-// An Ed25519 Signature
-type Signature struct {
-	Sig    []byte // Ed25519 sig bytes
-	pkhash []byte // [0:16] SHA256 hash of public key needed for verification
-}
+const _Sigtool_sign_prefix = "sigtool signed message"
 
-// Sign a prehashed Message; return the signature as opaque bytes
-// Signature is an YAML file:
+// Sigtool signatures are always of the form
+//   fingerprint.signature
+
+// Sign a prehashed Message; return the sigtool signature of the form
 //
-//	Comment: source file path
-//	Signature: Ed25519 signature
-func (sk *PrivateKey) SignMessage(ck []byte, comment string) (*Signature, error) {
-	h := sha3.New512()
-	h.Write([]byte("sigtool signed message"))
-	h.Write(ck)
-	ck = h.Sum(nil)[:]
+//	fingerprint.signature
+func (sk *PrivateKey) SignMessage(msg []byte) (string, error) {
+	var hb [sha512.Size]byte
 
-	x := Ed.PrivateKey(sk.Sk)
+	h := sha512.New()
+	h.Write([]byte(_Sigtool_sign_prefix))
+	h.Write(msg)
+	ck := h.Sum(hb[:0])[:]
+
+	x := Ed.PrivateKey(sk.sk)
+
 	sig, err := x.Sign(rand.Reader, ck, crypto.Hash(0))
 	if err != nil {
-		return nil, fmt.Errorf("can't sign %x: %s", ck, err)
+		return "", fmt.Errorf("can't sign %x: %s", ck, err)
 	}
 
-	ss := &Signature{
-		Sig:    sig,
-		pkhash: make([]byte, len(sk.pk.hash)),
-	}
-
-	copy(ss.pkhash, sk.pk.hash)
-	return ss, nil
+	ss := tob64(sig)
+	return fmt.Sprintf("%s.%s", sk.Fingerprint(), ss), nil
 }
 
 // Read and sign a file
@@ -68,94 +61,44 @@ func (sk *PrivateKey) SignMessage(ck []byte, comment string) (*Signature, error)
 // We calculate the signature differently here: We first calculate
 // the SHA-512 checksum of the file and its size. We sign the
 // checksum.
-func (sk *PrivateKey) SignFile(fn string) (*Signature, error) {
-
+func (sk *PrivateKey) SignFile(fn string) (string, error) {
 	ck, err := fileCksum(fn, func() hash.Hash {
 		return sha3.New512()
 	})
 	if err != nil {
-		return nil, err
+		return "", err
 	}
 
-	return sk.SignMessage(ck, fn)
+	return sk.SignMessage(ck)
 }
 
-// -- Signature Methods --
-
-// Read serialized signature from file 'fn' and construct a
-// Signature object
-func ReadSignature(fn string) (*Signature, error) {
-	yml, err := ioutil.ReadFile(fn)
+// Verify a signature 'sig' for a pre-calculated checksum 'ck' against public key 'pk'
+// Return True if signature matches, False otherwise
+func (pk *PublicKey) VerifyMessage(ck []byte, signature string) (bool, error) {
+	fp, sig, err := parseSig(signature)
 	if err != nil {
-		return nil, err
+		return false, fmt.Errorf("sigtool: verify %s: %w", signature, err)
 	}
 
-	var sig Signature
-	return makeSignature(&sig, yml)
-}
-
-// Parse serialized signature from bytes 'b' and construct a
-// Signature object
-func makeSignature(sig *Signature, b []byte) (*Signature, error) {
-	var ss signature
-	err := yaml.Unmarshal(b, &ss)
-	if err != nil {
-		return nil, fmt.Errorf("can't parse YAML signature: %s", err)
+	if fp != pk.Fingerprint() {
+		return false, fmt.Errorf("sigtool: verify %s: wrong PK %s", signature, fp)
 	}
 
-	b64 := base64.StdEncoding.DecodeString
-
-	s, err := b64(ss.Signature)
-	if err != nil {
-		return nil, fmt.Errorf("can't decode Base64:Signature <%s>: %s", ss.Signature, err)
-	}
-
-	p, err := b64(ss.Pkhash)
-	if err != nil {
-		return nil, fmt.Errorf("can't decode Base64:Pkhash <%s>: %s", ss.Pkhash, err)
-	}
-
-	sig.Sig = s
-	sig.pkhash = p
-	return sig, nil
-}
-
-// MarshalBinary marshals a signature into a byte stream with
-// an optional caller supplied comment.
-func (sig *Signature) MarshalBinary(comment string) ([]byte, error) {
-	sigs := base64.StdEncoding.EncodeToString(sig.Sig)
-	pks := base64.StdEncoding.EncodeToString(sig.pkhash)
-	ss := &signature{Comment: comment, Pkhash: pks, Signature: sigs}
-
-	return yaml.Marshal(ss)
-}
-
-// UnmarshalBinary constructs a Signature from a previously
-// serialized bytestream
-func (sig *Signature) UnmarshalBinary(b []byte) error {
-	_, err := makeSignature(sig, b)
-	return err
-}
-
-// Serialize a signature suitable for storing in durable media
-func (sig *Signature) Serialize(fn, comment string, ovwrite bool) error {
-	b, err := sig.MarshalBinary(comment)
-	if err == nil {
-		err = writeFile(fn, b, ovwrite, 0644)
-	}
-	return err
-}
-
-// IsPKMatch returns true if public key 'pk' can potentially validate
-// the signature. It does this by comparing the hash of 'pk' against
-// 'Pkhash' of 'sig'.
-func (sig *Signature) IsPKMatch(pk *PublicKey) bool {
-	return subtle.ConstantTimeCompare(pk.hash, sig.pkhash) == 1
+	return pk.verifySig(ck, sig), nil
 }
 
 // Verify a signature 'sig' for file 'fn' against public key 'pk'
 // Return True if signature matches, False otherwise
-func (pk *PublicKey) VerifyFile(fn string, sig *Signature) (bool, error) {
+func (pk *PublicKey) VerifyFile(fn string, signature string) (bool, error) {
+	fp, sig, err := parseSig(signature)
+	if err != nil {
+		return false, fmt.Errorf("sigtool: verify %s: %w", signature, err)
+	}
+
+	if fp != pk.Fingerprint() {
+		return false, fmt.Errorf("sigtool: verify %s: wrong PK %s", signature, fp)
+	}
+
 	ck, err := fileCksum(fn, func() hash.Hash {
 		return sha3.New512()
 	})
@@ -163,19 +106,77 @@ func (pk *PublicKey) VerifyFile(fn string, sig *Signature) (bool, error) {
 		return false, err
 	}
 
-	return pk.VerifyMessage(ck, sig), nil
+	return pk.verifySig(ck, sig), nil
 }
 
-// Verify a signature 'sig' for a pre-calculated checksum 'ck' against public key 'pk'
-// Return True if signature matches, False otherwise
-func (pk *PublicKey) VerifyMessage(ck []byte, sig *Signature) bool {
-	h := sha3.New512()
-	h.Write([]byte("sigtool signed message"))
-	h.Write(ck)
-	ck = h.Sum(nil)[:]
+// verify the signature 'sig' for the message 'msg'
+func (pk *PublicKey) verifySig(msg, sig []byte) bool {
+	var hb [sha512.Size]byte
 
-	x := Ed.PublicKey(pk.Pk)
-	return Ed.Verify(x, ck, sig.Sig)
+	h := sha512.New()
+	h.Write([]byte(_Sigtool_sign_prefix))
+	h.Write(msg)
+	ck := h.Sum(hb[:0])[:]
+
+	x := Ed.PublicKey(pk.pk)
+	return Ed.Verify(x, ck, sig)
+}
+
+func tob64(b []byte) string {
+	return base64.RawURLEncoding.EncodeToString(b)
+}
+
+func fromb64(s string) ([]byte, error) {
+	return base64.RawURLEncoding.DecodeString(s)
+}
+
+func b64len(n int) int {
+	return base64.RawURLEncoding.EncodedLen(n)
+}
+
+// Return the length in bytes of an encoded signature
+func sigLen() int {
+	return b64len(_FpSize) + 1 + b64len(Ed.SignatureSize)
+}
+
+// take a string representation of a sigtool signature and return the
+// fingerprint and decoded signature bytes
+func parseSig(ss string) (string, []byte, error) {
+	i := strings.IndexByte(ss, '.')
+	if i < 0 {
+		return "", nil, fmt.Errorf("invalid signature format")
+	}
+
+	fp, rest := ss[:i], ss[i+1:]
+
+	// fp and rest must be base64 decodable
+	_, err := fromb64(fp)
+	if err != nil {
+		return "", nil, fmt.Errorf("invalid fingerprint")
+	}
+
+	sig, err := fromb64(rest)
+	if err != nil {
+		return "", nil, fmt.Errorf("invalid signature")
+	}
+
+	return fp, sig, nil
+}
+
+// make a raandom looking signature
+func randSig() string {
+	fp := randBuf(_FpSize)
+	sig := randBuf(Ed.SignatureSize)
+
+	return fmt.Sprintf("%s.%s", tob64(fp), tob64(sig))
+}
+
+// make a null/empty sig
+func nullSig() string {
+	var zfp [_FpSize]byte
+	var zsig [Ed.SignatureSize]byte
+
+	return fmt.Sprintf("%s.%s", tob64(zfp[:]), tob64(zsig[:]))
 }
 
 // vim: noexpandtab:ts=8:sw=8:tw=92:

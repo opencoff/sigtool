@@ -95,13 +95,11 @@ func parseEncPubKey(in []byte, comm string) (*PublicKey, error) {
 		return nil, ErrBadTrailers
 	}
 
-	var pk PublicKey
-
-	if err = makePublicKeyFromBytes(&pk, w.KeyBytes); err == nil {
-		pk.Comment = strings.TrimSpace(comm)
-		return &pk, nil
+	pk, err := makePK(w.KeyBytes, strings.TrimSpace(comm))
+	if err != nil {
+		return nil, fmt.Errorf("sigtool: ssh public key: %w", err)
 	}
-	return nil, err
+	return pk, nil
 }
 
 func parseString(in []byte) (out, rest []byte, ok bool) {
@@ -345,11 +343,13 @@ func parseOpenSSHPrivateKey(data []byte, getpw func() ([]byte, error)) (*Private
 			}
 		}
 
-		var sk PrivateKey
-		if err = makePrivateKeyFromBytes(&sk, key.Priv); err == nil {
-			return &sk, nil
+		sk, err := makeSK(key.Priv, strings.TrimSpace(key.Comment))
+		if err != nil {
+			return nil, fmt.Errorf("sigtool: ssh private key: %w", err)
 		}
-		return nil, err
+
+		return sk, nil
+
 	default:
 		return nil, fmt.Errorf("ssh: unhandled key type: %v", pk1.Keytype)
 	}

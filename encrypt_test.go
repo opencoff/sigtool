@@ -30,7 +30,7 @@ func (b *Buffer) Close() error {
 func TestEncryptSimple(t *testing.T) {
 	assert := newAsserter(t)
 
-	sk, err := NewPrivateKey()
+	sk, err := NewPrivateKey(t.Name())
 	assert(err == nil, "SK gen failed: %s", err)
 
 	pk := sk.PublicKey()
@@ -75,7 +75,7 @@ func TestEncryptSimple(t *testing.T) {
 func TestEncryptSmallSizes(t *testing.T) {
 	assert := newAsserter(t)
 
-	rx, err := NewPrivateKey()
+	rx, err := NewPrivateKey(t.Name())
 	assert(err == nil, "RX SK gen failed: %s", err)
 	pk := rx.PublicKey()
 
@@ -124,7 +124,7 @@ func TestEncryptSmallSizes(t *testing.T) {
 func TestEncryptCorrupted(t *testing.T) {
 	assert := newAsserter(t)
 
-	sk, err := NewPrivateKey()
+	sk, err := NewPrivateKey(t.Name())
 	assert(err == nil, "SK gen failed: %s", err)
 
 	pk := sk.PublicKey()
@@ -170,10 +170,10 @@ func TestEncryptCorrupted(t *testing.T) {
 func TestEncryptSenderVerified(t *testing.T) {
 	assert := newAsserter(t)
 
-	sender, err := NewPrivateKey()
+	sender, err := NewPrivateKey(t.Name())
 	assert(err == nil, "sender SK gen failed: %s", err)
 
-	receiver, err := NewPrivateKey()
+	receiver, err := NewPrivateKey(t.Name())
 	assert(err == nil, "receiver SK gen failed: %s", err)
 
 	var blkSize int = 1024
@@ -201,7 +201,7 @@ func TestEncryptSenderVerified(t *testing.T) {
 	rd = bytes.NewBuffer(wr.Bytes())
 	wr = Buffer{}
 
-	randkey, err := NewPrivateKey()
+	randkey, err := NewPrivateKey(t.Name())
 	assert(err == nil, "rand SK gen failed: %s", err)
 
 	// first set wrong keys
@@ -225,7 +225,7 @@ func TestEncryptSenderVerified(t *testing.T) {
 func TestEncryptMultiReceiver(t *testing.T) {
 	assert := newAsserter(t)
 
-	sender, err := NewPrivateKey()
+	sender, err := NewPrivateKey(t.Name())
 	assert(err == nil, "sender SK gen failed: %s", err)
 
 	var blkSize int = 1024
@@ -246,7 +246,7 @@ func TestEncryptMultiReceiver(t *testing.T) {
 	n := 4
 	rx := make([]*PrivateKey, n)
 	for i := 0; i < n; i++ {
-		r, err := NewPrivateKey()
+		r, err := NewPrivateKey(t.Name())
 		assert(err == nil, "can't make receiver SK %d: %s", i, err)
 		rx[i] = r
 

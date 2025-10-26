@@ -1,0 +1,38 @@
+syntax="proto3";
+
+/*
+ * Serialized public and private sigtool keys
+ */
+
+option go_package = "internal/pb";
+
+
+message sk {
+    bytes  esk         = 1;
+    bytes  salt        = 2;
+
+    // the string is of the form: hash-kdf
+    // eg "sha3-argon2id"
+    //
+    // sha3 => we prehash a user supplied passphrase and expand into a
+    // larger string before feeding into argon2i. And we use sha3 for
+    // any hkdf expansion
+    string algo        = 3;
+
+    // TODO we ought to use an union here for future proofing.
+    // For now, we'll simply hard code
+    argon  kdf         = 4;
+}
+
+
+// Argon2id params
+message argon {
+    uint32 mem  = 1;
+    uint32 time = 2;
+    uint32 proc = 3;
+}
+
+
+message pk {
+    bytes pk  = 1;
+}

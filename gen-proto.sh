@@ -15,7 +15,7 @@
 
 # Relative path to protobuf sources
 # e.g. "a.proto b.proto"
-Protobufs="internal/pb/hdr.proto"
+Protobufs="internal/pb/hdr.proto internal/pb/key.proto"
 
 #set -x
 

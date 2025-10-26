@@ -66,7 +66,6 @@ import (
 	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
-	"crypto/ed25519"
 	"crypto/hmac"
 	"crypto/sha3"
 	"crypto/subtle"
@@ -343,7 +342,6 @@ func (e *Encryptor) start() error {
 //   - if authenticating sender, sign the hmac and put the signature in the trailer
 //   - if not authenticating sender, we put random bytes as the signature
 func (e *Encryptor) writeTrailer() error {
-	var zero [ed25519.SignatureSize]byte
 	var hmac [_Sha3Size]byte
 	var tr []byte
 
@@ -355,13 +353,13 @@ func (e *Encryptor) writeTrailer() error {
 
 	if e.auth {
 		// We know sender is non null.
-		sig, err := e.sender.SignMessage(hmac[:], "")
+		sig, err := e.sender.SignMessage(hmac[:])
 		if err != nil {
 			return fmt.Errorf("encrypt: trailer: %w", err)
 		}
-		tr = sig.Sig
+		tr = []byte(sig)
 	} else {
-		tr = randRead(zero[:])
+		tr = []byte(randSig())
 	}
 
 	if err := fullwrite(tr, e.wr); err != nil {
@@ -620,7 +618,6 @@ func (d *Decryptor) start(key []byte) (*Decryptor, error) {
 }
 
 func (d *Decryptor) processTrailer() error {
-	var rd [ed25519.SignatureSize]byte
 	var hmac [_Sha3Size]byte
 
 	// first read the hmac
@@ -629,24 +626,27 @@ func (d *Decryptor) processTrailer() error {
 		return fmt.Errorf("decrypt: premature EOF while reading hmac trailer: %w", err)
 	}
 
-	// Now read the sig
-	_, err = io.ReadFull(d.rd, rd[:])
-	if err != nil {
-		return fmt.Errorf("decrypt: premature EOF while reading trailer: %w", err)
-	}
-
 	cksum := d.hmac.Sum(nil)
 	if subtle.ConstantTimeCompare(hmac[:], cksum) == 0 {
 		return ErrBadTrailer
 	}
 
+	sigbuf := make([]byte, sigLen())
+
+	// Now read the sig
+	_, err = io.ReadFull(d.rd, sigbuf)
+	if err != nil {
+		return fmt.Errorf("decrypt: premature EOF while reading trailer: %w", err)
+	}
+
 	if d.auth {
-		ss := &Signature{
-			Sig: rd[:],
+		ok, err := d.sender.VerifyMessage(cksum, string(sigbuf))
+		if err != nil {
+			return fmt.Errorf("decrypt: trailer: %w", err)
 		}
 
-		if ok := d.sender.VerifyMessage(cksum, ss); !ok {
-			return ErrBadTrailer
+		if !ok {
+			return fmt.Errorf("decrypt: trailer: %w", ErrBadTrailer)
 		}
 	}
 
@@ -655,12 +655,12 @@ func (d *Decryptor) processTrailer() error {
 
 // optionally sign the checksum and encrypt everything
 func (e *Encryptor) addSenderSig(sk *PrivateKey) error {
-	var zero [ed25519.SignatureSize]byte
 	var auth bool
-	sig := zero[:]
+	var sig string
 
 	if e.sender != nil {
 		var csum [_Sha3Size256]byte
+		var err error
 
 		// We capture essential meta-data from the sender; viz:
 		//  - Sender tool version
@@ -675,12 +675,12 @@ func (e *Encryptor) addSenderSig(sk *PrivateKey) error {
 		h.Write(e.key)
 		cksum := h.Sum(csum[:0])
 
-		xsig, err := e.sender.SignMessage(cksum, "")
-		if err != nil {
+		if sig, err = e.sender.SignMessage(cksum); err != nil {
 			return fmt.Errorf("wrap: can't sign: %w", err)
 		}
-		sig = xsig.Sig
 		auth = true
+	} else {
+		sig = nullSig() // empty signature
 	}
 
 	buf := make([]byte, _AesKeySize+_AEADNonceSize)
@@ -699,7 +699,7 @@ func (e *Encryptor) addSenderSig(sk *PrivateKey) error {
 	}
 
 	outbuf := make([]byte, len(sig)+ae.Overhead())
-	buf = ae.Seal(outbuf[:0], nonce, sig, nil)
+	buf = ae.Seal(outbuf[:0], nonce, []byte(sig), nil)
 
 	e.auth = auth
 	e.Sender = buf
@@ -725,16 +725,16 @@ func (d *Decryptor) verifySender(key []byte, senderPk *PublicKey) error {
 		return fmt.Errorf("unwrap: %w", err)
 	}
 
-	var sigbuf [ed25519.SignatureSize]byte
-	var zero [ed25519.SignatureSize]byte
-
+	sigbuf := make([]byte, sigLen())
 	sig, err := ae.Open(sigbuf[:0], nonce, d.Sender, nil)
 	if err != nil {
 		return fmt.Errorf("unwrap: can't open sender info: %w", err)
 	}
 
+	nullsig := nullSig()
+
 	// Did the sender actually sign anything?
-	if subtle.ConstantTimeCompare(zero[:], sig) == 0 {
+	if subtle.ConstantTimeCompare([]byte(nullsig), sig) == 0 {
 		if senderPk == nil {
 			return ErrNoSenderPK
 		}
@@ -749,12 +749,13 @@ func (d *Decryptor) verifySender(key []byte, senderPk *PublicKey) error {
 		h.Write(key)
 		cksum := h.Sum(csum[:0])
 
-		ss := &Signature{
-			Sig: sig,
+		ok, err := senderPk.VerifyMessage(cksum, string(sig))
+		if err != nil {
+			return fmt.Errorf("decrypt: verify sender: %w", err)
 		}
 
-		if ok := senderPk.VerifyMessage(cksum, ss); !ok {
-			return ErrBadSender
+		if !ok {
+			return fmt.Errorf("decrypt: verify sender: %w", ErrBadSender)
 		}
 
 		// we set this to indicate that the sender authenticated themselves;
@@ -767,7 +768,7 @@ func (d *Decryptor) verifySender(key []byte, senderPk *PublicKey) error {
 // Wrap data encryption key 'k' with the sender's PK and our ephemeral curve SK
 // basically, we do a scalarmult: Ephemeral encryption/decryption SK x receiver PK
 func (e *Encryptor) wrapKey(pk *PublicKey) (*pb.WrappedKey, error) {
-	rxPK := pk.ToCurve25519PK()
+	rxPK := pk.ToCurve25519()
 	sekrit, err := curve25519.X25519(e.encSK, rxPK)
 	if err != nil {
 		return nil, fmt.Errorf("wrap: %w", err)
@@ -778,7 +779,7 @@ func (e *Encryptor) wrapKey(pk *PublicKey) (*pb.WrappedKey, error) {
 	out := make([]byte, _AesKeySize+_RxNonceSize)
 
 	// We entangle the sender & receiver PKs when we expand the shared secret
-	buf := expand(out[:], sekrit, salt, pk.Pk, e.Pk, []byte(_WrapReceiver))
+	buf := expand(out[:], sekrit, salt, pk.pk, e.Pk, []byte(_WrapReceiver))
 
 	kek, nonce := buf[:_AesKeySize], buf[_AesKeySize:]
 
@@ -794,7 +795,7 @@ func (e *Encryptor) wrapKey(pk *PublicKey) (*pb.WrappedKey, error) {
 
 	ekey := make([]byte, ae.Overhead()+len(e.key))
 	w := &pb.WrappedKey{
-		DKey: ae.Seal(ekey[:0], nonce, e.key, pk.Pk),
+		DKey: ae.Seal(ekey[:0], nonce, e.key, pk.pk),
 		Salt: salt,
 	}
 
@@ -804,7 +805,7 @@ func (e *Encryptor) wrapKey(pk *PublicKey) (*pb.WrappedKey, error) {
 // Unwrap a wrapped key using the receivers Ed25519 secret key 'sk' and
 // senders ephemeral PublicKey
 func (d *Decryptor) unwrapKey(w *pb.WrappedKey, sk *PrivateKey) ([]byte, error) {
-	ourSK := sk.ToCurve25519SK()
+	ourSK := sk.ToCurve25519()
 	sekrit, err := curve25519.X25519(ourSK, d.Pk)
 	if err != nil {
 		return nil, fmt.Errorf("unwrap: %w", err)
@@ -812,7 +813,7 @@ func (d *Decryptor) unwrapKey(w *pb.WrappedKey, sk *PrivateKey) ([]byte, error) 
 
 	pk := sk.PublicKey()
 	out := make([]byte, _AesKeySize+_RxNonceSize)
-	buf := expand(out[:], sekrit, w.Salt, pk.Pk, d.Pk, []byte(_WrapReceiver))
+	buf := expand(out[:], sekrit, w.Salt, pk.pk, d.Pk, []byte(_WrapReceiver))
 
 	kek, nonce := buf[:_AesKeySize], buf[_AesKeySize:]
 
@@ -833,7 +834,7 @@ func (d *Decryptor) unwrapKey(w *pb.WrappedKey, sk *PrivateKey) ([]byte, error) 
 
 	dkey := make([]byte, _AesKeySize) // decrypted data decryption key
 
-	dkey, err = ae.Open(dkey[:0], nonce, w.DKey, pk.Pk)
+	dkey, err = ae.Open(dkey[:0], nonce, w.DKey, pk.pk)
 	if err != nil {
 		// we indicate incorrect receiver SK by returning a nil key
 		return nil, nil

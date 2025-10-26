@@ -18,26 +18,28 @@
 package sigtool
 
 import (
-	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
-	"crypto/sha256"
 	"crypto/sha3"
 	"crypto/sha512"
-	"encoding/base64"
+	"crypto/subtle"
+	"encoding/pem"
 	"fmt"
-	"io/ioutil"
 	"math/big"
 
 	Ed "crypto/ed25519"
 	"golang.org/x/crypto/argon2"
-	"gopkg.in/yaml.v2"
+
+	"github.com/opencoff/sigtool/internal/pb"
 )
 
 // Private Ed25519 key
 type PrivateKey struct {
-	Sk []byte
+	sk []byte
+
+	// User provided comment string
+	Comment string
 
 	// Encryption key: Curve25519 point corresponding to this Ed25519 key
 	ck []byte
@@ -48,164 +50,134 @@ type PrivateKey struct {
 
 // Public Ed25519 key
 type PublicKey struct {
-	Pk []byte
+	pk []byte
 
-	// Comment string
+	// User provided comment string
 	Comment string
 
 	// Curve25519 point corresponding to this Ed25519 key
 	ck []byte
 
-	hash []byte
+	// fingerprint
+	fp []byte
 }
-
-// Length of Ed25519 Public Key Hash
 
 // constants we use in this module
 const (
-	PKHashLength = 16
-
-	// Scrypt parameters
-	_N int = 1 << 19
-	_r int = 8
-	_p int = 1
+	_FpSize = 16 // Length of Ed25519 Public Key Hash
 
 	// Algorithm used in the encrypted private key
-	sk_algo  = "argon2id-sha256"
-	sig_algo = "sha3-ed25519"
+	_Sk_algo = "sha3-argon2id"
+
+	// PEM Block header
+	_Sigtool_SK = "SIGTOOL PRIVATE KEY"
+	_Sigtool_PK = "SIGTOOL PUBLIC KEY"
 
 	// These are comforable margins exceeding
 	// NIST 2024 guidelines
 	_Argon2id_mem  uint32 = 64 * 1024
 	_Argon2id_time uint32 = 2
-	_Argon2id_proc uint8  = 8
+	_Argon2id_proc uint32 = 8
 )
-
-// Encrypted Private key
-type serializedPrivKey struct {
-	Comment string `yaml:"comment,omitempty"`
-
-	// Encrypted Sk
-	Esk  string `yaml:"esk"`
-	Salt string `yaml:"salt,omitempty"`
-
-	// Algorithm used for checksum and KDF
-	Algo string `yaml:"algo,omitempty"`
-
-	// These are params for argon2id
-
-	Mem  uint32 `yaml:"mem,flow,omitempty"`
-	Time uint32 `yaml:"time,flow,omitempty"`
-	Proc uint8  `yaml:"proc,flow,omitempty"`
-}
-
-// serialized representation of public key
-type serializedPubKey struct {
-	Comment string `yaml:"comment,omitempty"`
-	Pk      string `yaml:"pk"`
-	Hash    string `yaml:"hash"`
-}
-
-// Serialized signature
-type signature struct {
-	Comment   string `yaml:"comment,omitempty"`
-	Pkhash    string `yaml:"pkhash,omitempty"`
-	Signature string `yaml:"signature"`
-}
 
 // given a public key, generate a deterministic short-hash of it.
 func pkhash(pk []byte) []byte {
-	z := sha256.Sum256(pk)
-	return z[:PKHashLength]
+	z := sha3.Sum256(pk)
+	return z[:_FpSize]
 }
 
 // NewPrivateKey generates a new Ed25519 private key
-func NewPrivateKey() (*PrivateKey, error) {
+func NewPrivateKey(comment string) (*PrivateKey, error) {
 	pkb, skb, err := Ed.GenerateKey(rand.Reader)
 	if err != nil {
 		return nil, err
 	}
 
 	sk := &PrivateKey{
-		Sk: []byte(skb),
+		sk:      []byte(skb),
+		Comment: comment,
 		pk: &PublicKey{
-			Pk:   []byte(pkb),
-			hash: pkhash([]byte(pkb)),
+			pk:      []byte(pkb),
+			Comment: comment,
+			fp:      pkhash([]byte(pkb)),
 		},
 	}
 	return sk, nil
 }
 
-// Read the private key in 'fn', optionally decrypting it using
-// password 'pw' and create new instance of PrivateKey
-func ReadPrivateKey(fn string, getpw func() ([]byte, error)) (*PrivateKey, error) {
-	yml, err := ioutil.ReadFile(fn)
+// ParsePrivateKey makes a new private key from a previously serialized
+// byte stream
+func ParsePrivateKey(b []byte, getpw func() ([]byte, error)) (*PrivateKey, error) {
+	blk, _ := pem.Decode(b)
+	if blk == nil {
+		return nil, fmt.Errorf("sigtool: PrivateKey: No PEM")
+	}
+
+	if blk.Type == "OPENSSH PRIVATE KEY" {
+		return parseSSHPrivateKey(b, getpw)
+	}
+
+	if blk.Type != _Sigtool_SK {
+		return nil, fmt.Errorf("sigtool: PrivateKey: Not sigtool")
+	}
+
+	// Unmarshal first
+	var ssk pb.Sk
+
+	if err := ssk.UnmarshalVT(blk.Bytes); err != nil {
+		return nil, fmt.Errorf("sigtool: PrivateKey: %w", err)
+	}
+
+	var pw []byte
+
+	// we are now ready to decrypt
+	// but first get the user passphrase
+	if getpw != nil {
+		pwx, err := getpw()
+		if err != nil {
+			return nil, fmt.Errorf("sigtool: PrivateKey: parse: %w", err)
+		}
+		pw = pwx
+	}
+
+	skb, err := skDecrypt(pw, &ssk)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("sigtool: PrivateKey: decrypt: %w", err)
 	}
 
-	var sk PrivateKey
-	if err = sk.UnmarshalBinary(yml, getpw); err != nil {
-		return nil, err
-	}
-	return &sk, nil
-}
-
-// Make a private key from bytes 'yml' using optional caller provided
-// getpw() function to read the password if needed.
-// are assumed to be serialized version of the private key.
-func MakePrivateKey(yml []byte, getpw func() ([]byte, error)) (*PrivateKey, error) {
-	var sk PrivateKey
-
-	err := sk.UnmarshalBinary(yml, getpw)
+	// Now turn the raw bytes into a proper key
+	sk, err := makeSK(skb, blk.Headers["comment"])
 	if err != nil {
-		return nil, err
-	}
-	return &sk, nil
-}
-
-// make a PrivateKey from a byte array containing ed25519 raw SK
-func makePrivateKeyFromBytes(sk *PrivateKey, buf []byte) error {
-	if len(buf) != 64 {
-		return fmt.Errorf("private key is malformed (len %d!)", len(buf))
+		return nil, fmt.Errorf("sigtool: PrivateKey: parse: %w", err)
 	}
 
-	skb := make([]byte, 64)
-	copy(skb, buf)
-
-	edsk := Ed.PrivateKey(skb)
-	edpk := edsk.Public().(Ed.PublicKey)
-
-	pk := &PublicKey{
-		Pk:   []byte(edpk),
-		hash: pkhash([]byte(edpk)),
-	}
-	sk.Sk = skb
-	sk.pk = pk
-	return nil
+	return sk, nil
 }
 
-/*
-// Make a private key from 64-bytes of extended Ed25519 key
-func PrivateKeyFromBytes(buf []byte) (*PrivateKey, error) {
-	var sk PrivateKey
-
-	return makePrivateKeyFromBytes(&sk, buf)
-}
-*/
-
-// Given a secret key, return the corresponding Public Key
+// PublicKey returns the public key corresponding to this private key
 func (sk *PrivateKey) PublicKey() *PublicKey {
 	return sk.pk
 }
 
-// Convert an Ed25519 Private Key to Curve25519 Private key
-func (sk *PrivateKey) ToCurve25519SK() []byte {
+// Fingerprint returns the fingerprint of this key
+// (A fingerprint is a truncated hash of the public key)
+func (sk *PrivateKey) Fingerprint() string {
+	return sk.pk.Fingerprint()
+}
+
+// Equal returns true if the two PrivateKeys are equal and false otherwise
+func (sk *PrivateKey) Equal(other *PrivateKey) bool {
+	return subtle.ConstantTimeCompare(sk.sk, other.sk) == 1
+}
+
+// ToCurve25519 converts an ed25519 private key to its corresponding
+// curve25519 private key
+func (sk *PrivateKey) ToCurve25519() []byte {
 	if sk.ck == nil {
 		var ek [64]byte
 
 		h := sha512.New()
-		h.Write(sk.Sk[:32])
+		h.Write(sk.sk[:32])
 		h.Sum(ek[:0])
 
 		sk.ck = clamp(ek[:32])
@@ -214,219 +186,150 @@ func (sk *PrivateKey) ToCurve25519SK() []byte {
 	return sk.ck
 }
 
-// Serialize the private key to file 'fn' using human readable
-// 'comment' and encrypt the key with supplied passphrase 'pw'.
-func (sk *PrivateKey) Serialize(fn, comment string, ovwrite bool, pw []byte) error {
-	b, err := sk.MarshalBinary(comment, pw)
-	if err == nil {
-		return writeFile(fn, b, ovwrite, 0600)
-	}
-	return err
-}
-
-// MarshalBinary marshals the private key with a caller provided
-// passphrase 'pw' and human readable 'comment'
-func (sk *PrivateKey) MarshalBinary(comment string, pw []byte) ([]byte, error) {
-	// expand the password into 64 bytes
-	pass := sha3.Sum512(pw)
-	salt := make([]byte, _AEADNonceSize)
-
-	randRead(salt)
-
-	key := argonKDF(_AesKeySize, pass[:], salt)
-	aes, err := aes.NewCipher(key)
-	if err != nil {
-		return nil, fmt.Errorf("marshal: %s", err)
-	}
-
-	ae, err := cipher.NewGCM(aes)
-	if err != nil {
-		return nil, fmt.Errorf("marshal: %s", err)
-	}
-
-	tl := ae.Overhead()
-	buf := make([]byte, tl+len(sk.Sk))
-	esk := ae.Seal(buf[:0], salt[:ae.NonceSize()], sk.Sk, nil)
-
-	enc := base64.StdEncoding.EncodeToString
-
-	ssk := serializedPrivKey{
-		Comment: comment,
-		Esk:     enc(esk),
-		Salt:    enc(salt),
-		Algo:    sk_algo,
-		Mem:     _Argon2id_mem,
-		Time:    _Argon2id_time,
-		Proc:    _Argon2id_proc,
-	}
-
-	// We won't protect the Scrypt parameters with the hash above
-	// because it is not needed. If the parameters are wrong, the
-	// derived key will be wrong and thus, the hash will not match.
-
-	return yaml.Marshal(&ssk)
-}
-
-// UnmarshalBinary unmarshals the private key and optionally invokes the
-// caller provided getpw() function to read the password if needed. If the
-// input byte stream 'b' is an OpenSSH ed25519 key, this function transparently
-// decodes it.
-func (sk *PrivateKey) UnmarshalBinary(b []byte, getpw func() ([]byte, error)) error {
-	if bytes.Index(b, []byte("OPENSSH PRIVATE KEY-")) > 0 {
-		xk, err := parseSSHPrivateKey(b, getpw)
-		if err != nil {
-			return err
-		}
-		*sk = *xk
-		return nil
-	}
-
+// Marshal marshals the private key into sigtool native format by encrypting
+// the private key with the user supplied function to get a passphrase
+func (sk *PrivateKey) Marshal(getpw func() ([]byte, error)) ([]byte, error) {
 	var pw []byte
+
+	// first get the user passphrase
 	if getpw != nil {
-		var err error
-		pw, err = getpw()
+		pwx, err := getpw()
 		if err != nil {
-			return err
+			return nil, fmt.Errorf("sigtool: PrivateKey %s: marshal: %w", sk.Comment, err)
 		}
+		pw = pwx
 	}
 
-	// We take short passwords and extend them
+	// AES Encrypt the sk
+	esk, salt, err := sk.encrypt(pw)
+	if err != nil {
+		return nil, fmt.Errorf("sigtool: PrivateKey %s: encrypt: %w", sk.Comment, err)
+	}
+
+	ssk := &pb.Sk{
+		Esk:  esk,
+		Salt: salt,
+		Algo: _Sk_algo,
+		Kdf: &pb.Argon{
+			Mem:  _Argon2id_mem,
+			Time: _Argon2id_time,
+			Proc: _Argon2id_proc,
+		},
+	}
+
+	skb, err := ssk.MarshalVT()
+	if err != nil {
+		return nil, fmt.Errorf("sigtool: PrivateKey %s: marshal: %w", sk.Comment, err)
+	}
+
+	// Put this in a PEM Block
+	blk := &pem.Block{
+		Type: _Sigtool_SK,
+		Headers: map[string]string{
+			"comment":     sk.Comment,
+			"fingerprint": sk.pk.Fingerprint(),
+		},
+		Bytes: skb,
+	}
+
+	b := pem.EncodeToMemory(blk)
+	return b, nil
+}
+
+// encrypt the private key bytes with user supplied passphrase and using
+// default argon2id params
+func (sk *PrivateKey) encrypt(pw []byte) ([]byte, []byte, error) {
 	pwb := sha3.Sum512(pw)
+	salt := randBuf(32)
+	buf := argonKDF(_AEADNonceSize+_AesKeySize, pwb[:], salt)
+	key, nonce := buf[:_AesKeySize], buf[_AesKeySize:]
 
-	var ssk serializedPrivKey
-
-	err := yaml.Unmarshal(b, &ssk)
+	ciph, err := aes.NewCipher(key)
 	if err != nil {
-		return fmt.Errorf("unmarshal priv key: can't parse YAML: %s", err)
+		return nil, nil, err
 	}
 
-	if len(ssk.Salt) == 0 || len(ssk.Esk) == 0 {
-		return fmt.Errorf("unmarshal priv key: not YAML format")
-	}
-
-	b64 := base64.StdEncoding.DecodeString
-
-	salt, err := b64(ssk.Salt)
+	ae, err := cipher.NewGCM(ciph)
 	if err != nil {
-		return fmt.Errorf("unmarshal priv key: can't decode salt: %s", err)
+		return nil, nil, err
 	}
 
-	esk, err := b64(ssk.Esk)
-	if err != nil {
-		return fmt.Errorf("unmarshal priv key: can't decode key: %s", err)
-	}
+	esk := ae.Seal(nil, nonce, sk.sk, nil)
 
-	key := argon2.IDKey(pwb[:], salt, ssk.Time, ssk.Mem, ssk.Proc, uint32(_AesKeySize))
-
-	aes, err := aes.NewCipher(key)
-	if err != nil {
-		return fmt.Errorf("unmarshal priv key: aes failure: %s", err)
-	}
-
-	ae, err := cipher.NewGCM(aes)
-	if err != nil {
-		return fmt.Errorf("unmarshal priv key: aes failure: %s", err)
-	}
-
-	skb := make([]byte, 64)
-	skb, err = ae.Open(skb[:0], salt[:ae.NonceSize()], esk, nil)
-	if err != nil {
-		return fmt.Errorf("unmarshal priv key: wrong password")
-	}
-
-	return makePrivateKeyFromBytes(sk, skb)
+	return esk, salt, nil
 }
 
-//  --- Public Key Methods ---
-
-// Read the public key from 'fn' and create new instance of
-// PublicKey
-func ReadPublicKey(fn string) (*PublicKey, error) {
-	var err error
-	var yml []byte
-
-	if yml, err = ioutil.ReadFile(fn); err != nil {
-		return nil, err
+// decrypt an encrypted Sk using the given user passphrase and KDF params
+func skDecrypt(pw []byte, ssk *pb.Sk) ([]byte, error) {
+	if ssk.Algo != _Sk_algo {
+		return nil, fmt.Errorf("unknown KDF: %s", ssk.Algo)
 	}
 
-	var pk PublicKey
-	if err = pk.UnmarshalBinary(yml); err != nil {
-		return nil, err
-	}
-	return &pk, nil
-}
+	pwb := sha3.Sum512(pw)
+	kdf := ssk.Kdf
+	buf := argon2.IDKey(pwb[:], ssk.Salt, kdf.Time,
+		kdf.Mem, uint8(0xff&kdf.Proc), uint32(_AEADNonceSize+_AesKeySize))
+	key, nonce := buf[:_AesKeySize], buf[_AesKeySize:]
 
-// Parse a serialized public in 'yml' and return the resulting
-// public key instance
-func MakePublicKey(yml []byte) (*PublicKey, error) {
-	var pk PublicKey
-	if err := pk.UnmarshalBinary(yml); err != nil {
-		return nil, err
-	}
-	return &pk, nil
-}
-
-// Make a public key from a string
-func MakePublicKeyFromString(s string) (*PublicKey, error) {
-	// first try to decode it as a openssh key
-	if pk2, err := parseEncPubKey([]byte(s), "command-line-pk"); err == nil {
-		return pk2, nil
-	}
-
-	// Now try to decode as an sigtool key
-	b64 := base64.StdEncoding.DecodeString
-
-	pkb, err := b64(s)
+	ciph, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, err
 	}
 
-	var pk PublicKey
-	err = makePublicKeyFromBytes(&pk, pkb)
+	ae, err := cipher.NewGCM(ciph)
 	if err != nil {
 		return nil, err
 	}
-	return &pk, nil
-}
 
-func makePublicKeyFromBytes(pk *PublicKey, b []byte) error {
-	if len(b) != 32 {
-		return fmt.Errorf("public key is malformed (len %d!)", len(b))
+	skb, err := ae.Open(nil, nonce, ssk.Esk, nil)
+	if err != nil {
+		return nil, err
 	}
 
-	pk.Pk = make([]byte, 32)
-	pk.hash = pkhash(b)
-	copy(pk.Pk, b)
-
-	return nil
+	return skb, nil
 }
 
-/*
-// Make a public key from a byte string
-func PublicKeyFromBytes(b []byte) (*PublicKey, error) {
-	var pk PublicKey
+// -- public key methods --
 
-	makePublicKeyFromBytes(&pk, b)
-}
-*/
-
-// Serialize a PublicKey into file 'fn' with a human readable 'comment'.
-// If 'ovwrite' is true, overwrite the file if it exists.
-func (pk *PublicKey) Serialize(fn, comment string, ovwrite bool) error {
-	out, err := pk.MarshalBinary(comment)
-	if err == nil {
-		return writeFile(fn, out, ovwrite, 0644)
+// ParsePublicKey makes a new public key from a previously serialized byte
+// stream
+func ParsePublicKey(b []byte) (*PublicKey, error) {
+	blk, _ := pem.Decode(b)
+	if blk == nil {
+		return nil, fmt.Errorf("sigtool: PublicKey: No PEM")
 	}
 
-	return err
+	if blk.Type != _Sigtool_PK {
+		return nil, fmt.Errorf("sigtool: PublicKey: Not sigtool")
+	}
+
+	// Unmarshal first
+	var spk pb.Pk
+
+	if err := spk.UnmarshalVT(blk.Bytes); err != nil {
+		return nil, fmt.Errorf("sigtool: PublicKey: %w", err)
+	}
+
+	pk, err := makePK(spk.Pk, blk.Headers["comment"])
+	if err != nil {
+		return nil, fmt.Errorf("sigtool: PublicKey: %w", err)
+	}
+	return pk, nil
 }
 
-// from github.com/FiloSottile/age
-var curve25519P, _ = new(big.Int).SetString("57896044618658097711785492504343953926634992332820282019728792003956564819949", 10)
+// Fingerprint returns the fingerprint of this public key
+func (pk *PublicKey) Fingerprint() string {
+	return tob64(pk.fp)
+}
 
-// Convert an Ed25519 Public Key to Curve25519 public key
-// from github.com/FiloSottile/age
-func (pk *PublicKey) ToCurve25519PK() []byte {
+// Equal returns true if the two PrivateKeys are equal and false otherwise
+func (pk *PublicKey) Equal(other *PublicKey) bool {
+	return subtle.ConstantTimeCompare(pk.pk, other.pk) == 1
+}
+
+// ToCurve25519 converts an Ed25519 Public Key to its corresponding Curve25519
+// public key. This is directly from github.com/FiloSottile/age.
+func (pk *PublicKey) ToCurve25519() []byte {
 	if pk.ck != nil {
 		return pk.ck
 	}
@@ -434,7 +337,7 @@ func (pk *PublicKey) ToCurve25519PK() []byte {
 	// ed25519.PublicKey is a little endian representation of the y-coordinate,
 	// with the most significant bit set based on the sign of the x-ccordinate.
 	bigEndianY := make([]byte, Ed.PublicKeySize)
-	for i, b := range pk.Pk {
+	for i, b := range pk.pk {
 		bigEndianY[Ed.PublicKeySize-i-1] = b
 	}
 	bigEndianY[0] &= 0b0111_1111
@@ -461,58 +364,70 @@ func (pk *PublicKey) ToCurve25519PK() []byte {
 	return out
 }
 
-// Public Key Hash
-func (pk *PublicKey) Hash() []byte {
-	return pk.hash
+// Marshal marshals the public key in sigtool native format
+func (pk *PublicKey) Marshal() ([]byte, error) {
+	spk := &pb.Pk{
+		Pk: pk.pk,
+	}
+
+	pkb, err := spk.MarshalVT()
+	if err != nil {
+		return nil, fmt.Errorf("sigtool: PublicKey %s: marshal: %w", pk.Comment, err)
+	}
+
+	blk := &pem.Block{
+		Type: _Sigtool_PK,
+		Headers: map[string]string{
+			"comment":     pk.Comment,
+			"fingerprint": pk.Fingerprint(),
+		},
+		Bytes: pkb,
+	}
+
+	b := pem.EncodeToMemory(blk)
+	return b, nil
 }
 
-// MarshalBinary marshals a PublicKey into a byte array
-func (pk *PublicKey) MarshalBinary(comment string) ([]byte, error) {
-	b64 := base64.StdEncoding.EncodeToString
-	spk := &serializedPubKey{
-		Comment: comment,
-		Pk:      b64(pk.Pk),
-		Hash:    b64(pk.hash),
-	}
-
-	return yaml.Marshal(spk)
-}
-
-// UnmarshalBinary constructs a PublicKey from a previously
-// marshaled byte stream instance. In addition, it is also
-// capable of parsing an OpenSSH ed25519 public key.
-func (pk *PublicKey) UnmarshalBinary(yml []byte) error {
-
-	// first try to parse as a ssh key
-	if xk, err := parseSSHPublicKey(yml); err == nil {
-		*pk = *xk
-		return nil
-	}
-
-	// OK Yaml it is.
-
-	var spk serializedPubKey
-	var err error
-
-	if err = yaml.Unmarshal(yml, &spk); err != nil {
-		return fmt.Errorf("can't parse YAML: %s", err)
-	}
-
-	if len(spk.Pk) == 0 {
-		return fmt.Errorf("sign: not a YAML public key")
-	}
-
-	b64 := base64.StdEncoding.DecodeString
-	var pkb []byte
-
-	if pkb, err = b64(spk.Pk); err != nil {
-		return fmt.Errorf("can't decode YAML:Pk: %s", err)
-	}
-
-	return makePublicKeyFromBytes(pk, pkb)
-}
+// from github.com/FiloSottile/age
+var curve25519P, _ = new(big.Int).SetString("57896044618658097711785492504343953926634992332820282019728792003956564819949", 10)
 
 // -- Internal Utility Functions --
+
+func makeSK(skb []byte, comm string) (*PrivateKey, error) {
+	if len(skb) != 64 {
+		return nil, fmt.Errorf("SK too small (%d)", len(skb))
+	}
+
+	edsk := Ed.PrivateKey(skb)
+	edpk := []byte(edsk.Public().(Ed.PublicKey))
+
+	pk := &PublicKey{
+		pk:      edpk,
+		Comment: comm,
+		fp:      pkhash(edpk),
+	}
+
+	sk := &PrivateKey{
+		sk:      skb,
+		Comment: comm,
+		pk:      pk,
+	}
+
+	return sk, nil
+}
+
+func makePK(pkb []byte, comm string) (*PublicKey, error) {
+	if len(pkb) != 32 {
+		return nil, fmt.Errorf("PK len wrong (%d)", len(pkb))
+	}
+
+	pk := &PublicKey{
+		pk:      pkb,
+		Comment: comm,
+		fp:      pkhash(pkb),
+	}
+	return pk, nil
+}
 
 func clamp(k []byte) []byte {
 	k[0] &= 248
@@ -522,8 +437,8 @@ func clamp(k []byte) []byte {
 }
 
 func argonKDF(n int, secret, salt []byte) []byte {
-	return argon2.IDKey(secret, salt, _Argon2id_time, _Argon2id_mem, _Argon2id_proc, uint32(n))
+	return argon2.IDKey(secret, salt, _Argon2id_time,
+		_Argon2id_mem, uint8(0xff&_Argon2id_proc), uint32(n))
 }
 
-// EOF
 // vim: noexpandtab:ts=8:sw=8:tw=92:

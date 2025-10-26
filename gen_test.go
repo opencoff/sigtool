@@ -40,6 +40,5 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-
 func TestEmpty(t *testing.T) {
 }
