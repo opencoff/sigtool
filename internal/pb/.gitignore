@@ -25,6 +25,7 @@ _testmain.go
 vendor/*
 
 bin/*
+sigtool
 
 .??*.sw?
 *.pub

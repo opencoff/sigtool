@@ -15,7 +15,7 @@
 //   - narrowly scope the key support for ONLY ed25519 keys
 //   - support reading multiple public keys from authorized_keys
 
-package sign
+package sigtool
 
 import (
 	"bytes"

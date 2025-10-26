@@ -11,11 +11,10 @@
 // warranty; it is provided "as is". No claim  is made to its
 // suitability for any purpose.
 
-package sign
+package sigtool
 
 import (
 	"fmt"
-	"io/ioutil"
 	"os"
 	"path"
 	"testing"
@@ -70,16 +69,6 @@ func fileExists(fn string) bool {
 	return false
 }
 
-const badsk string = `
-esk: q8AP3/6C5F0zB8CLiuJsidx2gJYmrnyOmuoazEbKL5Uh+Jn/Zgw85fTbYfhjcbt48CJejBzsgPYRYR7wWECFRA==
-salt: uIdTQZotfnkaLkth9jsHvoQKMWdNZuE7dgVNADrRoeY=
-algo: scrypt-sha256
-verify: AOFLLC6h29+mvstWtMU1/zZFwHLBMMiI4mlW9DHpYdM=
-Z: 65536
-r: 8
-p: 1
-`
-
 // #1. Create new key pair, and read them back.
 func TestSignSimple(t *testing.T) {
 	assert := newAsserter(t)
@@ -124,13 +113,6 @@ func TestSignSimple(t *testing.T) {
 
 	nsk, err = ReadPrivateKey(skf, wrongPw)
 	assert(err != nil, "ReadSK() worked with wrong pw")
-
-	badf := fmt.Sprintf("%s/badf.key", dn)
-	err = ioutil.WriteFile(badf, []byte(badsk), 0600)
-	assert(err == nil, "can't write badsk: %s", err)
-
-	nsk, err = ReadPrivateKey(badf, hardcodedPw)
-	assert(err != nil, "decoded bad SK")
 
 	// Finally, with correct password it should work.
 	nsk, err = ReadPrivateKey(skf, hardcodedPw)

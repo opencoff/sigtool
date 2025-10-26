@@ -18,7 +18,7 @@ import (
 	"os"
 
 	flag "github.com/opencoff/pflag"
-	"github.com/opencoff/sigtool/sign"
+	"github.com/opencoff/sigtool"
 )
 
 func verify(args []string) {
@@ -57,15 +57,15 @@ Options:
 	fn := args[2]
 
 	// We first try to read the public key as a base64/openssh string
-	pk, err := sign.MakePublicKeyFromString(pn)
+	pk, err := sigtool.MakePublicKeyFromString(pn)
 	if err != nil {
-		pk, err = sign.ReadPublicKey(pn)
+		pk, err = sigtool.ReadPublicKey(pn)
 		if err != nil {
 			Die("%s", err)
 		}
 	}
 
-	sig, err := sign.ReadSignature(sn)
+	sig, err := sigtool.ReadSignature(sn)
 	if err != nil {
 		Die("Can't read signature '%s': %s", sn, err)
 	}

@@ -119,10 +119,10 @@ func (m *WrappedKey) MarshalToSizedBufferVT(dAtA []byte) (int, error) {
 		i -= len(m.unknownFields)
 		copy(dAtA[i:], m.unknownFields)
 	}
-	if len(m.Nonce) > 0 {
-		i -= len(m.Nonce)
-		copy(dAtA[i:], m.Nonce)
-		i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.Nonce)))
+	if len(m.Salt) > 0 {
+		i -= len(m.Salt)
+		copy(dAtA[i:], m.Salt)
+		i = protohelpers.EncodeVarint(dAtA, i, uint64(len(m.Salt)))
 		i--
 		dAtA[i] = 0x12
 	}
@@ -177,7 +177,7 @@ func (m *WrappedKey) SizeVT() (n int) {
 	if l > 0 {
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	}
-	l = len(m.Nonce)
+	l = len(m.Salt)
 	if l > 0 {
 		n += 1 + l + protohelpers.SizeOfVarint(uint64(l))
 	}
@@ -456,7 +456,7 @@ func (m *WrappedKey) UnmarshalVT(dAtA []byte) error {
 			iNdEx = postIndex
 		case 2:
 			if wireType != 2 {
-				return fmt.Errorf("proto: wrong wireType = %d for field Nonce", wireType)
+				return fmt.Errorf("proto: wrong wireType = %d for field Salt", wireType)
 			}
 			var byteLen int
 			for shift := uint(0); ; shift += 7 {
@@ -483,9 +483,9 @@ func (m *WrappedKey) UnmarshalVT(dAtA []byte) error {
 			if postIndex > l {
 				return io.ErrUnexpectedEOF
 			}
-			m.Nonce = append(m.Nonce[:0], dAtA[iNdEx:postIndex]...)
-			if m.Nonce == nil {
-				m.Nonce = []byte{}
+			m.Salt = append(m.Salt[:0], dAtA[iNdEx:postIndex]...)
+			if m.Salt == nil {
+				m.Salt = []byte{}
 			}
 			iNdEx = postIndex
 		default:

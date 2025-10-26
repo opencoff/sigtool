@@ -15,15 +15,16 @@
 //   - key generation, and key I/O
 //   - sign/verify of files and byte strings
 
-package sign
+package sigtool
 
 import (
 	"crypto"
 	"crypto/rand"
-	"crypto/sha512"
+	"crypto/sha3"
 	"crypto/subtle"
 	"encoding/base64"
 	"fmt"
+	"hash"
 	"io/ioutil"
 
 	Ed "crypto/ed25519"
@@ -42,7 +43,7 @@ type Signature struct {
 //	Comment: source file path
 //	Signature: Ed25519 signature
 func (sk *PrivateKey) SignMessage(ck []byte, comment string) (*Signature, error) {
-	h := sha512.New()
+	h := sha3.New512()
 	h.Write([]byte("sigtool signed message"))
 	h.Write(ck)
 	ck = h.Sum(nil)[:]
@@ -69,7 +70,9 @@ func (sk *PrivateKey) SignMessage(ck []byte, comment string) (*Signature, error)
 // checksum.
 func (sk *PrivateKey) SignFile(fn string) (*Signature, error) {
 
-	ck, err := fileCksum(fn, sha512.New())
+	ck, err := fileCksum(fn, func() hash.Hash {
+		return sha3.New512()
+	})
 	if err != nil {
 		return nil, err
 	}
@@ -153,7 +156,9 @@ func (sig *Signature) IsPKMatch(pk *PublicKey) bool {
 // Verify a signature 'sig' for file 'fn' against public key 'pk'
 // Return True if signature matches, False otherwise
 func (pk *PublicKey) VerifyFile(fn string, sig *Signature) (bool, error) {
-	ck, err := fileCksum(fn, sha512.New())
+	ck, err := fileCksum(fn, func() hash.Hash {
+		return sha3.New512()
+	})
 	if err != nil {
 		return false, err
 	}
@@ -164,7 +169,7 @@ func (pk *PublicKey) VerifyFile(fn string, sig *Signature) (bool, error) {
 // Verify a signature 'sig' for a pre-calculated checksum 'ck' against public key 'pk'
 // Return True if signature matches, False otherwise
 func (pk *PublicKey) VerifyMessage(ck []byte, sig *Signature) bool {
-	h := sha512.New()
+	h := sha3.New512()
 	h.Write([]byte("sigtool signed message"))
 	h.Write(ck)
 	ck = h.Sum(nil)[:]

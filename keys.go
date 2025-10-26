@@ -15,7 +15,7 @@
 //   - key generation, and key I/O
 //   - sign/verify of files and byte strings
 
-package sign
+package sigtool
 
 import (
 	"bytes"
@@ -23,6 +23,7 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/sha3"
 	"crypto/sha512"
 	"encoding/base64"
 	"fmt"
@@ -30,7 +31,7 @@ import (
 	"math/big"
 
 	Ed "crypto/ed25519"
-	"golang.org/x/crypto/scrypt"
+	"golang.org/x/crypto/argon2"
 	"gopkg.in/yaml.v2"
 )
 
@@ -59,18 +60,25 @@ type PublicKey struct {
 }
 
 // Length of Ed25519 Public Key Hash
-const PKHashLength = 16
 
 // constants we use in this module
 const (
+	PKHashLength = 16
+
 	// Scrypt parameters
 	_N int = 1 << 19
 	_r int = 8
 	_p int = 1
 
 	// Algorithm used in the encrypted private key
-	sk_algo  = "scrypt-sha256"
-	sig_algo = "sha512-ed25519"
+	sk_algo  = "argon2id-sha256"
+	sig_algo = "sha3-ed25519"
+
+	// These are comforable margins exceeding
+	// NIST 2024 guidelines
+	_Argon2id_mem  uint32 = 64 * 1024
+	_Argon2id_time uint32 = 2
+	_Argon2id_proc uint8  = 8
 )
 
 // Encrypted Private key
@@ -84,13 +92,11 @@ type serializedPrivKey struct {
 	// Algorithm used for checksum and KDF
 	Algo string `yaml:"algo,omitempty"`
 
-	// These are params for scrypt.Key()
-	// CPU Cost parameter; must be a power of 2
-	N int `yaml:"Z,flow,omitempty"`
+	// These are params for argon2id
 
-	// r * p should be less than 2^30
-	R int `yaml:"r,flow,omitempty"`
-	P int `yaml:"p,flow,omitempty"`
+	Mem  uint32 `yaml:"mem,flow,omitempty"`
+	Time uint32 `yaml:"time,flow,omitempty"`
+	Proc uint8  `yaml:"proc,flow,omitempty"`
 }
 
 // serialized representation of public key
@@ -222,17 +228,12 @@ func (sk *PrivateKey) Serialize(fn, comment string, ovwrite bool, pw []byte) err
 // passphrase 'pw' and human readable 'comment'
 func (sk *PrivateKey) MarshalBinary(comment string, pw []byte) ([]byte, error) {
 	// expand the password into 64 bytes
-	pass := sha512.Sum512(pw)
-	salt := make([]byte, 32)
+	pass := sha3.Sum512(pw)
+	salt := make([]byte, _AEADNonceSize)
 
 	randRead(salt)
 
-	// "32" == Length of AES-256 key
-	key, err := scrypt.Key(pass[:], salt, _N, _r, _p, 32)
-	if err != nil {
-		return nil, fmt.Errorf("marshal: can't derive scrypt key: %s", err)
-	}
-
+	key := argonKDF(_AesKeySize, pass[:], salt)
 	aes, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, fmt.Errorf("marshal: %s", err)
@@ -254,9 +255,9 @@ func (sk *PrivateKey) MarshalBinary(comment string, pw []byte) ([]byte, error) {
 		Esk:     enc(esk),
 		Salt:    enc(salt),
 		Algo:    sk_algo,
-		N:       _N,
-		R:       _r,
-		P:       _p,
+		Mem:     _Argon2id_mem,
+		Time:    _Argon2id_time,
+		Proc:    _Argon2id_proc,
 	}
 
 	// We won't protect the Scrypt parameters with the hash above
@@ -290,7 +291,7 @@ func (sk *PrivateKey) UnmarshalBinary(b []byte, getpw func() ([]byte, error)) er
 	}
 
 	// We take short passwords and extend them
-	pwb := sha512.Sum512(pw)
+	pwb := sha3.Sum512(pw)
 
 	var ssk serializedPrivKey
 
@@ -315,11 +316,7 @@ func (sk *PrivateKey) UnmarshalBinary(b []byte, getpw func() ([]byte, error)) er
 		return fmt.Errorf("unmarshal priv key: can't decode key: %s", err)
 	}
 
-	// "32" == Length of AES-256 key
-	key, err := scrypt.Key(pwb[:], salt, ssk.N, ssk.R, ssk.P, 32)
-	if err != nil {
-		return fmt.Errorf("unmarshal priv key: can't derive key: %s", err)
-	}
+	key := argon2.IDKey(pwb[:], salt, ssk.Time, ssk.Mem, ssk.Proc, uint32(_AesKeySize))
 
 	aes, err := aes.NewCipher(key)
 	if err != nil {
@@ -522,6 +519,10 @@ func clamp(k []byte) []byte {
 	k[31] &= 127
 	k[31] |= 64
 	return k
+}
+
+func argonKDF(n int, secret, salt []byte) []byte {
+	return argon2.IDKey(secret, salt, _Argon2id_time, _Argon2id_mem, _Argon2id_proc, uint32(n))
 }
 
 // EOF

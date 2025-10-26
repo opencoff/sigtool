@@ -12,7 +12,7 @@
 // suitability for any purpose.
 //
 
-package sign
+package sigtool
 
 import (
 	"errors"

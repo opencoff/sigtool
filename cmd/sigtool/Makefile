@@ -1,5 +1,6 @@
 
 pwd = $(shell pwd)
+top = $(pwd)/../..
 
 .PHONY: all test clean realclean
 
@@ -7,7 +8,8 @@ all:
 	./build -s
 
 test:
-	go test ./sign
+	cd $(top) && go test -v
+	./tests.sh
 
 clean realclean:
-	rm -rf bin
+	rm -rf $(top)/bin

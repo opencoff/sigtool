@@ -24,6 +24,6 @@ message header {
  */
 message wrapped_key {
     bytes d_key = 1;    // encrypted data key
-    bytes nonce = 2;    // nonce used for encryption
+    bytes salt  = 2;    // nonce used for encryption
 }
 

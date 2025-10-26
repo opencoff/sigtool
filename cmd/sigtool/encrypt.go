@@ -1,4 +1,4 @@
-// crypt.go -- Encrypt/decrypt command handling
+// encrypt.go -- Encrypt command handling
 //
 // (c) 2016 Sudhi Herle <sudhi@herle.net>
 //
@@ -23,10 +23,8 @@ import (
 	"github.com/opencoff/go-fio"
 	"github.com/opencoff/go-utils"
 	flag "github.com/opencoff/pflag"
-	"github.com/opencoff/sigtool/sign"
+	"github.com/opencoff/sigtool"
 )
-
-// sigtool encrypt [-i|--identity my.key] to.pub [to.pub] [ssh.pub] inputfile|- [-o output]
 
 func encrypt(args []string) {
 	fs := flag.NewFlagSet("encrypt", flag.ExitOnError)
@@ -58,10 +56,10 @@ func encrypt(args []string) {
 	}
 
 	var pws, infile string
-	var sk *sign.PrivateKey
+	var sk *sigtool.PrivateKey
 
 	if len(keyfile) > 0 {
-		sk, err = sign.ReadPrivateKey(keyfile, func() ([]byte, error) {
+		sk, err = sigtool.ReadPrivateKey(keyfile, func() ([]byte, error) {
 			if nopw {
 				return nil, nil
 			}
@@ -113,8 +111,8 @@ func encrypt(args []string) {
 		}
 	}
 
-	pka, err := sign.ParseAuthorizedKeys(authdata)
-	keymap := make(map[string]*sign.PublicKey)
+	pka, err := sigtool.ParseAuthorizedKeys(authdata)
+	keymap := make(map[string]*sigtool.PublicKey)
 
 	for _, pk := range pka {
 		keymap[pk.Comment] = pk
@@ -155,7 +153,7 @@ func encrypt(args []string) {
 		outfd = sf
 	}
 
-	en, err := sign.NewEncryptor(sk, blksize)
+	en, err := sigtool.NewEncryptor(sk, infd, outfd, blksize)
 	if err != nil {
 		Die("%s", err)
 	}
@@ -163,7 +161,7 @@ func encrypt(args []string) {
 	errs := 0
 	for i := 0; i < len(args)-1; i++ {
 		var err error
-		var pk *sign.PublicKey
+		var pk *sigtool.PublicKey
 
 		fn := args[i]
 		if strings.Index(fn, "@") > 0 {
@@ -175,7 +173,7 @@ func encrypt(args []string) {
 				continue
 			}
 		} else {
-			pk, err = sign.ReadPublicKey(fn)
+			pk, err = sigtool.ReadPublicKey(fn)
 			if err != nil {
 				Warn("%s", err)
 				errs += 1
@@ -193,163 +191,13 @@ func encrypt(args []string) {
 		Die("Too many errors!")
 	}
 
-	err = en.Encrypt(infd, outfd)
+	err = en.Encrypt()
 	if err != nil {
 		Die("%s", err)
 	}
 	outfd.Close()
 }
 
-type nullWriter struct{}
-
-func (w *nullWriter) Write(p []byte) (int, error) {
-	return len(p), nil
-}
-
-func (w *nullWriter) Close() error {
-	return nil
-}
-
-var _ io.WriteCloser = &nullWriter{}
-
-// sigtool decrypt a.key [file] [-o output]
-func decrypt(args []string) {
-	fs := flag.NewFlagSet("decrypt", flag.ExitOnError)
-	fs.Usage = func() {
-		decryptUsage(fs)
-	}
-
-	var envpw string
-	var outfile string
-	var pubkey string
-	var nopw, test, force bool
-
-	fs.StringVarP(&outfile, "outfile", "o", "", "Write the output to file `F`")
-	fs.BoolVarP(&nopw, "no-password", "", false, "Don't ask for passphrase to decrypt the private key")
-	fs.StringVarP(&envpw, "env-password", "E", "", "Use passphrase from environment variable `E`")
-	fs.StringVarP(&pubkey, "verify-sender", "v", "", "Verify that the sender matches public key in `F`")
-	fs.BoolVarP(&test, "test", "t", false, "Test the encrypted file against the given key without writing to output")
-	fs.BoolVarP(&force, "overwrite", "", false, "Overwrite the output file if it exists")
-
-	err := fs.Parse(args)
-	if err != nil {
-		Die("%s", err)
-	}
-
-	args = fs.Args()
-	if len(args) < 1 {
-		Die("Insufficient args. Try '%s --help'", os.Args[0])
-	}
-
-	var infd io.Reader = os.Stdin
-	var outfd io.WriteCloser = os.Stdout
-	var inf *os.File
-	var infile string
-
-	keyfile := args[0]
-	sk, err := sign.ReadPrivateKey(keyfile, func() ([]byte, error) {
-		var pws string
-		if nopw {
-			return nil, nil
-		}
-
-		if len(envpw) > 0 {
-			pws = os.Getenv(envpw)
-		} else {
-			pws, err = utils.Askpass("Enter passphrase for private key", false)
-			if err != nil {
-				Die("%s", err)
-			}
-		}
-		return []byte(pws), nil
-	})
-	if err != nil {
-		Die("%s", err)
-	}
-
-	var pk *sign.PublicKey
-
-	if len(pubkey) > 0 {
-		pk, err = sign.ReadPublicKey(pubkey)
-		if err != nil {
-			Die("%s", err)
-		}
-	}
-
-	if len(args) > 1 {
-		infile = args[1]
-		if infile != "-" {
-			inf := mustOpen(infile, os.O_RDONLY)
-			defer inf.Close()
-
-			infd = inf
-		}
-	}
-
-	if test {
-		outfd = &nullWriter{}
-	} else if len(outfile) > 0 && outfile != "-" {
-		var mode os.FileMode = 0600 // conservative mode
-
-		if inf != nil {
-			var ist, ost os.FileInfo
-			var err error
-
-			if ost, err = os.Stat(outfile); err != nil {
-				Die("can't stat %s: %s", outfile, err)
-			}
-			if ist, err = inf.Stat(); err != nil {
-				Die("can't stat %s: %s", infile, err)
-			}
-			if os.SameFile(ist, ost) {
-				Die("won't create output file: same as input file!")
-			}
-			mode = ist.Mode()
-		}
-
-		var opts uint32
-		if force {
-			opts |= fio.OPT_OVERWRITE
-		}
-		sf, err := fio.NewSafeFile(outfile, opts, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
-		if err != nil {
-			Die("%s", err)
-		}
-
-		AtExit(sf.Abort)
-		defer sf.Abort()
-		outfd = sf
-	}
-
-	d, err := sign.NewDecryptor(infd)
-	if err != nil {
-		Die("%s", err)
-	}
-
-	err = d.SetPrivateKey(sk, pk)
-	if err != nil {
-		Die("%s", err)
-	}
-
-	if pk == nil && d.AuthenticatedSender() {
-		var fn string = infile
-		if len(fn) == 0 || fn == "-" {
-			fn = "<stdin>"
-		}
-		Warn("%s: Missing sender Public Key; can't authenticate sender ..", fn)
-	}
-
-	if err = d.Decrypt(outfd); err != nil {
-		Die("%s", err)
-	}
-
-	outfd.Close()
-
-	if test {
-		Warn("Enc file OK")
-	}
-
-}
 
 func encryptUsage(fs *flag.FlagSet) {
 	fmt.Printf(`%s encrypt: Encrypt a file to one or more recipients.
@@ -366,22 +214,6 @@ Where TO is the public key of the recipient; it can be one of:
 
 INFILE is an input file to be encrypted. If the input file is '-' then %s
 reads from STDIN. Unless '-o' is used, %s writes the encrypted output to STDOUT.
-
-Options:
-`, Z, Z, Z, Z)
-
-	fs.PrintDefaults()
-	os.Exit(0)
-}
-
-func decryptUsage(fs *flag.FlagSet) {
-	fmt.Printf(`%s decrypt: Decrypt a file.
-
-Usage: %s decrypt [options] key [infile]
-
-Where KEY is the private key to be used for decryption and INFILE is
-the encrypted input file. If INFILE is not provided, %s reads
-from STDIN. Unless '-o' is used, %s writes the decrypted output to STDOUT.
 
 Options:
 `, Z, Z, Z, Z)

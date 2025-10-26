@@ -11,7 +11,7 @@
 // warranty; it is provided "as is". No claim  is made to its
 // suitability for any purpose.
 
-package sign
+package sigtool
 
 import (
 	"encoding/binary"
@@ -43,13 +43,15 @@ func writeFile(fn string, b []byte, ovwrite bool, mode uint32) error {
 }
 
 // Generate file checksum out of hash function h
-func fileCksum(fn string, h hash.Hash) ([]byte, error) {
+func fileCksum(fn string, f func() hash.Hash) ([]byte, error) {
 	fd, err := os.Open(fn)
 	if err != nil {
 		return nil, fmt.Errorf("can't open %s: %s", fn, err)
 	}
 
 	defer fd.Close()
+
+	h := f()
 
 	sz, err := mmap.Reader(fd, func(b []byte) error {
 		h.Write(b)
@@ -61,6 +63,7 @@ func fileCksum(fn string, h hash.Hash) ([]byte, error) {
 
 	var b [8]byte
 	binary.BigEndian.PutUint64(b[:], uint64(sz))
+
 	h.Write(b[:])
 
 	return h.Sum(nil)[:], nil

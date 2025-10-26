@@ -21,7 +21,7 @@ import (
 	"github.com/opencoff/go-fio"
 	"github.com/opencoff/go-utils"
 	flag "github.com/opencoff/pflag"
-	"github.com/opencoff/sigtool/sign"
+	"github.com/opencoff/sigtool"
 )
 
 // Run the 'sign' command.
@@ -84,7 +84,7 @@ Options:
 		fd = sf
 	}
 
-	sk, err := sign.ReadPrivateKey(kn, func() ([]byte, error) {
+	sk, err := sigtool.ReadPrivateKey(kn, func() ([]byte, error) {
 		if nopw {
 			return nil, nil
 		}

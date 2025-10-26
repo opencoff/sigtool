@@ -2,6 +2,12 @@
 # simple round-trip tests to verify the tool
 # Usage:
 #    $0 [bin=/path/to/sigtool] [tmpdir=/path/to/workdir]
+#
+
+# Where is the project root relative to here?
+Topdir=../..
+
+#set -x
 
 Z=`basename $0`
 die() {
@@ -29,8 +35,10 @@ for a in $*; do
     esac
 done
 
+# Rebind Topdir as abspath
+Topdir=$(cd ${Topdir} && pwd)
 arch=`./build --print-arch`
-bin=./bin/$arch/sigtool
+bin=$Topdir/bin/$arch/sigtool
 ./build || die "can't find & build sigtool"
 
 [ -z "$tmpdir" ] && tmpdir=/tmp/sigtool$$

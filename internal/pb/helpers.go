@@ -2,7 +2,6 @@
 
 package pb
 
-
 func (m *Header) Size() int {
 	return m.SizeVT()
 }

@@ -1,0 +1,546 @@
+#! /usr/bin/env bash
+
+# Tool to build go programs in this repo
+#
+# - it tacks on a version number for use by the individual tools
+# - it supports git and mercurial version#
+#
+# NB:
+#   o the attempt at decoding dirty repo state for mercurial is
+#     borked. It doesn't know about untracked files
+#
+# (c) 2016 Sudhi Herle
+#
+# License: GPLv2
+
+# list of programs:
+#   srcdir:progname srcdir2:prog2 ...
+Progs=".:sigtool"
+
+# Relative path to protobuf sources
+# e.g. src/foo/a.proto
+Protobufs=""
+
+# Location of top of the source tree relative to this dir
+# Most often it is ".". But for cmd/sigtool, we have to ascend two dirs
+Topdir=../..
+
+#set -x
+
+# -- DO NOT CHANGE ANYTHING AFTER THIS --
+
+Z=`basename $0`
+PWD=`pwd`
+
+# Rebind as abspath
+Topdir=$(cd "${Topdir}" && pwd)
+
+Static=0
+Dryrun=0
+Prodver=""
+Repover=""
+Verbose=0
+Go=`which go`
+Arch=
+Bindir=$Topdir/bin
+#e=echo
+
+#set -x
+# Go module proxy URL
+GoModProxy="https://proxy.golang.org"
+ProtobufRepo="google.golang.org/protobuf"
+VTProtoRepo="github.com/planetscale/vtprotobuf"
+
+# tools.go definition
+Tools_go=./tools.go
+
+die() {
+    echo "$Z: $@" 1>&2
+    exit 0
+}
+
+warn() {
+    echo "$Z: $@" 1>&2
+}
+
+case $BASH_VERSION in
+    4.*|5.*) ;;
+
+    *) die "I need bash 4.x to run!"
+        ;;
+esac
+
+# Fetch the latest version of the given tool
+gettool_version_latest() {
+    local mod=$1; shift
+    local jq=`which jq`
+    local curl=`which curl`
+
+    [ -z "$jq" ]   && die "can't find jq; please install it"
+    [ -z "$curl" ] && die "can't find curl; please install it"
+
+    local ver=$($curl -s "${GoModProxy}/${mod}/@latest" | $jq .Version | tr -d '"' ) || die "can't run curl"
+    echo $ver
+}
+
+show_tool_versions() {
+    # Lets find the latest versions
+    local pb_latest=$(gettool_version_latest $ProtobufRepo)
+    local vt_latest=$(gettool_version_latest $VTProtoRepo)
+
+    set -- $($Go list -m $ProtobufRepo)
+    local pb_mod=$2
+
+    set -- $($Go list -m $VTProtoRepo)
+    local vt_mod=$2
+
+    echo "$ProtobufRepo: $pb_mod [latest $pb_latest]"
+    echo "$VTProtoRepo: $vt_mod [latest $vt_latest]"
+    exit 0
+}
+
+
+getvcs_version() {
+    local rev=
+    local prodv=
+    local git=`which git`
+    local hg=`which hg`
+
+    if [ -n "$git" ]; then
+        local xrev=$(git describe --always --dirty --long --abbrev=12) || exit 1
+        rev="git:$xrev"
+        prodv=$(git tag --list | sort -V | tail -1)
+    elif [ -n "$hg" ]; then
+        local xrev=$(hg id --id) || exit 1
+        local brev=${xrev%+}
+        if [ "$brev" != "$xrev" ]; then
+            rev="hg:${brev}+dirty"
+        else
+            rev="hg:${brev}"
+        fi
+        prodv=$(hg log -r "branch(stable) and tag()" -T "{tags}\n" | sort -V | tail -1)
+    else
+        warn "no git or hg found; can't get VCS info"
+        rev="UNKNOWN-VER"
+    fi
+
+    [ -n "$Prodver" ] && prodv=$Prodver
+
+    echo "$rev $prodv"
+    return 0
+}
+
+read -r Repover Prodver <<< $(getvcs_version)
+
+
+usage() {
+    declare -a progv=($Progs)
+    declare n=${#progv[@]}
+    declare pstr=
+
+    for ((i=0; i < n; i++)); do
+        local ent=${progv[$i]}
+        local dir=${ent%%:*}
+        local tool=${ent##*:}
+        pstr=$(printf "$pstr\n\t%s $Prodver $Repover (from ./%s)" $tool $dir)
+    done
+
+    cat <<EOF
+$0 - A Go production build tool that adds git-repository information,
+product version, build-timestamp etc. It supports cross-compilation,
+static linking and generating protobuf output.
+
+Build output is in bin/\$OS-\$CPU for a given OS, CPU combination.
+
+Usage: $0
+       $0 [options] [PROGS]
+
+Where OS-ARCH denotes one of the valid OS, ARCH combinations supported by 'go'.
+And, PROGS is one or more go programs.
+
+With no arguments, $0 builds: $pstr
+
+The repository's latest tag is used as the default version of the software being
+built. The current repository version is $Repover.
+
+Options:
+    -h, --help          Show this help message and quit
+    -b D, --bindir=D    Put the binaries in the directory 'D' [$Bindir]
+    -s, --static        Build a statically linked binary [False]
+    -V N, --version=N   Use 'N' as the product version string [$Prodver]
+    -a X, --arch=X      Cross compile for OS-CPU 'X' [$hostos-$hostcpu]
+    -n, --dry-run       Dry-run, don't actually build anything [False]
+    -t, --test          Run "go test" on modules named on the command line [False]
+    -v, --verbose       Build verbosely (adds "-v" to go tooling) [False]
+    --check-tools       Show the latest version of the protobuf tools
+    --vet               Run "go vet" on modules named on the command line [False]
+    --mod               Run "go mod ..." [False]
+    --go=G              Use Go in 'G' [$Go]
+    -x                  Run in debug/trace mode [False]
+    --print-arch        Print the target architecture and exit
+EOF
+
+    exit 0
+}
+
+host=`uname|tr '[A-Z]' '[a-z]'`
+
+declare -A oses
+declare -A cpus
+declare -A cgo
+
+# Supported & Verified OS/CPU combos for this script
+oslist="linux android openbsd freebsd darwin dragonfly netbsd windows"
+needcgo="android"
+cpulist="i386 amd64 arm arm64"
+cpualias_i386="i486 i586 i686"
+cpualias_amd64="x86_64"
+cpualias_arm64="aarch64"
+
+# CGO Cross-Compilers for various CPU+OS combinations of Android
+android_i386=i686-linux-android-gcc
+android_arm64=aarch64-linux-android-gcc
+android_arm=arm-linux-androideabi-gcc
+
+# initialize the various hash tables
+for o in $oslist;  do oses[$o]=$o; done
+for o in $needcgo; do cgo[$o]=$o;  done
+for c in $cpulist; do
+    cpus[$c]=$c
+    a="cpualias_$c"
+    a=${!a}
+    for x in $a; do cpus[$x]=$c; done
+done
+
+
+Tool=
+doinit=0
+args=
+Printarch=0
+
+#set -x
+ac_prev=
+for ac_option
+do
+  shift
+
+  if [ -n "$ac_prev" ]; then
+    eval "$ac_prev=\$ac_option"
+    ac_prev=
+    continue
+  fi
+
+  case "$ac_option" in
+      -*=*) ac_optarg=`echo "$ac_option" | sed 's/[-_a-zA-Z0-9]*=//'` ;;
+      *) ac_optarg= ;;
+  esac
+
+
+  case "$ac_option" in
+        --help|-h|--hel|--he|--h)
+            usage;
+            ;;
+
+        --arch=*)
+            Arch=$ac_optarg
+            ;;
+
+        -a|--arch)
+            ac_prev=Arch
+            ;;
+
+        -b|--bindir)
+            ac_prev=Bindir
+            ;;
+
+        --bindir=*)
+            Bindir=$ac_optarg
+            ;;
+
+        --version=*)
+            Prodver=$ac_optarg
+            ;;
+
+        --test|-t)
+            Tool=test
+            ;;
+
+        --vet)
+            Tool=vet
+            ;;
+
+        --mod)
+            Tool=mod
+            ;;
+
+        -V|--version)
+            ac_prev=Prodver
+            ;;
+
+        -v|--verbose)
+            Verbose=1
+            ;;
+
+        -s|--static)
+            Static=1
+            ;;
+
+        --dry-run|-n)
+            Dryrun=1
+            ;;
+
+        --debug|-x)
+            set -x
+            ;;
+
+        --go-root=*)
+            GoRoot=$ac_optarg
+            ;;
+
+        --print-arch)
+            Printarch=1
+            ;;
+
+        --check-tools)
+            show_tool_versions
+            ;;
+
+        *) # first non option terminates option processing.
+           # we gather all remaining args and bundle them up.
+            args="$args $ac_option"
+            for xx
+            do
+                args="$args $xx"
+            done
+            break
+            ;;
+  esac
+done
+
+[ $Dryrun  -gt 0 ] && e=echo
+
+# let every error abort
+set -e
+
+# build a tool that runs on the host - if needed.
+hosttool() {
+    local out=$1
+    local src=$2
+
+    local name="$(basename $out)"
+
+    # build per the go.mod file
+    # build it and stash it in the hostdir
+    echo "Building $name from $src .."
+    $e $Go build -o $out $src || die "can't build $name"
+
+    return 0
+}
+
+# check if a .proto file is newer than generated files
+# Return "shell true" if files need to be regenerated
+needs_regen() {
+    local fn=$1; shift
+    local base=${fn%.proto}
+    local pbgo=${base}.pb.go
+    local vtgo=${base}_vtproto.pb.go
+
+    [ -f $pbgo -a  -f $vtgo ]          || return 0
+    [ $fn -nt $pbgo -o $fn -nt $vtgo ] && return 0
+    return 1
+}
+
+# protobuf gen
+buildproto() {
+    local pbgo=protoc-gen-go
+    local vtgo=protoc-gen-go-vtproto
+    local pbgo_src="$ProtobufRepo/cmd/$pbgo"
+    local vtgo_src="$VTProtoRepo/cmd/$vtgo"
+    local pc
+    local args="$*"
+
+    local pgen=$(type -p protoc)
+
+    [ -z $pgen  ] && die "install protoc tools (protobuf on macports)"
+
+    # Check to see if tools.go is present
+    if [ ! -f $Tools_go ]; then
+        cat <<_EOF > $Tools_go
+//go:build tools
+
+package tools
+
+import (
+    _ "google.golang.org/protobuf/cmd/protoc-gen-go"
+    _ "github.com/planetscale/vtprotobuf/cmd/protoc-gen-go-vtproto"
+)
+_EOF
+
+        $e $Go mod tidy
+    fi
+
+    local gogen=$Hostbindir/$pbgo
+    local vtgen=$Hostbindir/$vtgo
+
+    # install protoc-gen-go and vtproto tools locally; we want to
+    # pin these tools to the specific versions in go.mod
+    # tools.go captures the essential tooling dependency in go.mod
+    [ -x $gogen ] || hosttool $gogen $pbgo_src
+    [ -x $vtgen ] || hosttool $vtgen $vtgo_src
+
+    for f in $args; do
+        needs_regen $f || continue
+
+        $e $pgen  \
+            --go_out=$pwd --plugin protoc-gen-go="$gogen" \
+            --go_opt="paths=source_relative" \
+            --go-vtproto_out=$pwd --plugin protoc-gen-go-vtproto="$vtgen" \
+            --go-vtproto_opt="paths=source_relative,features=marshal+unmarshal+size"  \
+             $f || die "can't generate protobuf output for $f .."
+    done
+
+    return 0
+}
+
+
+# the rest has to execute in the context of main shell (not funcs)
+
+hostos=$($Go  env GOHOSTOS)      || exit 1
+hostcpu=$($Go env GOHOSTARCH)    || exit 1
+
+# This fragment can't be in a function - since it exports several vars
+if [ -n "$Arch" ]; then
+    ox=${Arch%%-*}
+    cx=${Arch##*-}
+    [ "$ox" = "$cx" ] && cx=$hostcpu
+
+    os=${oses[$ox]}
+    cpu=${cpus[$cx]}
+    [ -z "$os" ]  && die "Don't know anything about OS $ox"
+    [ -z "$cpu" ] && die "Don't know anything about CPU $cx"
+
+    export GOOS=$os GOARCH=$cpu
+    cross=$os-$cpu
+
+else
+    os=$hostos
+    cpu=$hostcpu
+    cross=$os-$cpu
+    export GOOS=$os GOARCH=$cpu
+fi
+
+# If we don't need CGO, then we can attempt a static link
+ldflags=
+isuffix=
+msg=
+if [ -n "${cgo[$os]}" ]; then
+    export CGO_ENABLED=1
+
+    # See if we have a specific cross-compiler for this CPU+OS combo
+    set +u
+    xcc="${GOOS}_${GOARCH}"
+    ycc=${!xcc}
+    if [ -n "$ycc" ]; then
+        p=`type -p $ycc`
+        [ -n "$p" ] || die "Can't find $xcc! Do you have compilers for $GOARCH available in PATH?"
+        export CC=$ycc
+    else
+        echo "$Z: No Cross compiler defined for $GOOS-$GOARCH. Build may fail.." 1>&2
+    fi
+    set -u
+else
+    if [ $Static -gt 0 ]; then
+        export CGO_ENABLED=0
+
+        isuffix="--installsuffix cgo"
+        ldflags="-s"
+        msg="statically linked"
+    fi
+fi
+
+if [ $Printarch -gt 0 ]; then
+    echo "$hostos-$hostcpu"
+    exit 0
+fi
+
+
+# This is where build outputs go
+Outdir=$Bindir/$cross
+Hostbindir=$Bindir/$hostos-$hostcpu
+export PATH=$Hostbindir:$PATH
+
+[ -d $Outdir ]     || mkdir -p $Outdir
+[ -d $Hostbindir ] || mkdir -p $Hostbindir
+
+
+# Do Protobufs if needed
+if [ -n "$Protobufs" ]; then
+    set +e
+    buildproto $Protobufs
+    set -e
+fi
+
+# Get git/hg version info for the build
+repover="main.RepoVersion=$Repover"
+prodver="main.ProductVersion=$Prodver"
+ldflags="-ldflags \"-X $repover -X $prodver $ldflags -buildid=\""
+vflag=""
+
+[ $Verbose -gt 0 ] && vflag="-v"
+
+case $Tool in
+    test)
+        set -- $args
+        $e $Go test $vflag "$@"
+        ;;
+
+    vet)
+        set -- $args
+        $e $Go vet $vflag "$@"
+        ;;
+
+    mod)
+        set -- $args
+        $e $Go mod $vflag "$@"
+        ;;
+
+    *) # Default is to build programs
+        set -- $args
+        if [ $# -eq 0 ]; then
+            all=$Progs
+        else
+            all="$@"
+        fi
+
+        [ -z "$all" ] && die "No programs specified. Try '$Z --help'"
+
+        echo "Building $Prodver ($Repover), $cross $msg .."
+
+        for p in $all; do
+            if echo $p | grep -q ':' ; then
+                out=${p##*:}
+                dir=${p%%:*}
+            else
+                out=$p
+                dir=$p
+            fi
+
+            # Add .exe suffix to out if needed
+            if [ "$GOOS" = "windows" ]; then
+                base=${out%%.exe}
+                out="${base}.exe"
+                old="${base}.prev.exe"
+            else
+                old="${out}.prev"
+            fi
+
+            echo "   $dir: $out .. "
+            outbin=$Outdir/$out
+            oldbin=$Outdir/$old
+            [ -f $outbin ] && mv -f $outbin $oldbin
+            $e eval $Go build $vflag -trimpath -buildvcs=true -o $outbin $isuffix "$ldflags" ./$dir || exit 1
+        done
+        ;;
+esac
+
+# vim: ft=sh:expandtab:ts=4:sw=4:tw=84:

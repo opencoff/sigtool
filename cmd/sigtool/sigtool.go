@@ -22,7 +22,7 @@ import (
 
 	"github.com/opencoff/go-utils"
 	flag "github.com/opencoff/pflag"
-	"github.com/opencoff/sigtool/sign"
+	"github.com/opencoff/sigtool"
 )
 
 var Z string = path.Base(os.Args[0])
@@ -84,7 +84,7 @@ func main() {
 	}
 
 	if debug {
-		sign.Debug(1)
+		sigtool.Debug(1)
 	}
 
 	cmd(args[1:])

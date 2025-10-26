@@ -1,5 +1,10 @@
 #! /usr/bin/env bash
 
+#set -x
+
+# Where is the project root relative to here?
+Topdir=../..
+
 Z=`basename $0`
 die() {
     echo "$Z: $@" 1>&2
@@ -17,9 +22,12 @@ case $BASH_VERSION in
         ;;
 esac
 
-Rel=$PWD/releases
-Bindir=$Rel/bin
+# Rebind Topdir as abspath
+Topdir=$(cd ${Topdir} && pwd)
+Rel=$Topdir/releases
+Bindir=$Topdir/bin
 mkdir -p $Bindir || die "can't make $Bindir"
+mkdir -p $Rel    || die "can't make $Rel"
 
 pkgit() {
     local os=$1
@@ -34,19 +42,22 @@ pkgit() {
         bin=${bin}.exe
     fi
 
+    warn "$arch  [$tgz]  .."
     ./build -V $rev -b $Bindir -s -a $arch || die "can't build $arch"
     (cd $bindir && tar cf - $bin)  | gzip -9 > $tgz || die "can't tar $tgz"
 }
 
 xrev=$(git describe --always --dirty --abbrev=12) || exit 1
 if echo $xrev | grep -q dirty; then
-    die "won't build releases; repo dirty!"
+    #die "won't build releases; repo dirty!"
     true
 fi
 
 os="linux windows openbsd darwin"
 arch="amd64 arm64"
 
+os="linux darwin"
+arch="amd64 arm64"
 for xx in $os; do
     for yy in $arch; do
         pkgit $xx $yy $xrev

@@ -20,7 +20,7 @@ import (
 
 	"github.com/opencoff/go-utils"
 	flag "github.com/opencoff/pflag"
-	"github.com/opencoff/sigtool/sign"
+	"github.com/opencoff/sigtool"
 )
 
 // Run the generate command
@@ -84,7 +84,7 @@ Options:
 		pw = []byte(pws)
 	}
 
-	sk, err := sign.NewPrivateKey()
+	sk, err := sigtool.NewPrivateKey()
 	if err != nil {
 		Die("%s", err)
 	}
