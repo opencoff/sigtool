@@ -72,14 +72,14 @@ func decrypt(args []string) {
 
 	// Read the private key first
 	skfile := args[0]
-	getpw := maybeGetPw(nopw, envpw)
-	sk, err = readSK(skfile, getpw)
+	getpw := maybeGetPw(nopw, envpw, false)
+	sk, err = sigtool.ReadPrivateKey(skfile, getpw)
 	if err != nil {
 		Die("%s", err)
 	}
 
 	if len(pubkey) > 0 {
-		pk, err = readPK(pubkey)
+		pk, err = sigtool.ReadPublicKey(pubkey)
 		if err != nil {
 			Die("%s", err)
 		}

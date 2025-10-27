@@ -84,9 +84,9 @@ const (
 	// The latest version of the tool's output file format
 	_SigtoolVersion = 4
 
-	chunkSize    uint32 = 4 * 1048576 // 4 MB
-	maxChunkSize uint32 = 1 << 30
-	_EOF         uint32 = 1 << 31
+	_chunkSize    uint32 = 4 * 1048576 // 4 MB
+	_maxChunkSize uint32 = 1 << 30
+	_EOF          uint32 = 1 << 31
 
 	_Magic       = "SigTool"
 	_MagicLen    = len(_Magic)
@@ -130,16 +130,20 @@ type Encryptor struct {
 }
 
 // NewEncryptor creates a new Encryption context for encrypting blocks of size 'blksize'
-// by reading // from input stream 'rd' and writing to stream 'wr'.
+// by reading from input stream 'rd' and writing to stream 'wr'.
 // If 'sk' is not nil, authenticate the sender to each receiver.
-func NewEncryptor(sk *PrivateKey, rd io.Reader, wr io.WriteCloser, blksize uint64) (*Encryptor, error) {
+func NewEncryptor(sk *PrivateKey, rx *PublicKey, rd io.Reader, wr io.WriteCloser, blksize uint64) (*Encryptor, error) {
+	if rx == nil {
+		return nil, fmt.Errorf("encrypt: Need at least one recipient")
+	}
+
 	var blksz uint32
 
 	switch {
 	case blksize == 0:
-		blksz = chunkSize
-	case blksize > uint64(maxChunkSize):
-		blksz = maxChunkSize
+		blksz = _chunkSize
+	case blksize > uint64(_maxChunkSize):
+		blksz = _maxChunkSize
 	default:
 		blksz = uint32(blksize)
 	}
@@ -170,6 +174,10 @@ func NewEncryptor(sk *PrivateKey, rd io.Reader, wr io.WriteCloser, blksize uint6
 
 	if err = e.addSenderSig(sk); err != nil {
 		return nil, fmt.Errorf("encrypt: %w", err)
+	}
+
+	if err = e.AddRecipient(rx); err != nil {
+		return nil, err
 	}
 
 	return e, nil
@@ -455,7 +463,7 @@ func NewDecryptor(sk *PrivateKey, senderPk *PublicKey, rd io.Reader, wr io.Write
 		return nil, fmt.Errorf("decrypt: header decode: %w", err)
 	}
 
-	if d.ChunkSize == 0 || d.ChunkSize >= maxChunkSize {
+	if d.ChunkSize == 0 || d.ChunkSize >= _maxChunkSize {
 		return nil, fmt.Errorf("decrypt: invalid chunkSize %d", d.ChunkSize)
 	}
 

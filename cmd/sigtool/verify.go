@@ -56,7 +56,7 @@ Options:
 	sn := args[1]
 	fn := args[2]
 
-	pk, err := readPK(pn)
+	pk, err := sigtool.ReadPublicKey(pn)
 	if err != nil {
 		Die("%s: %s", pn, err)
 	}
@@ -85,24 +85,4 @@ Options:
 	}
 
 	os.Exit(exit)
-}
-
-// read and parse a PK; a PK can be:
-// - a string containing the openssh PK
-// - a file containing the openssh PK
-// - a file containing native sigtool PK
-func readPK(fn string) (*sigtool.PublicKey, error) {
-	// first see if we can read the file
-	pkb, err := os.ReadFile(fn)
-	if err != nil {
-		// we couldn't; let's treat it as a string
-		pkb = []byte(fn)
-	}
-
-	// Now parse the public key
-	pk, err := sigtool.ParsePublicKey(pkb)
-	if err != nil {
-		return nil, err
-	}
-	return pk, nil
 }

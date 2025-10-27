@@ -57,15 +57,14 @@ Options:
 
 	kn := args[0]
 	fn := args[1]
-	outf := fmt.Sprintf("%s.sig", fn)
 
 	var err error
+	var outf string = "-"
+	var fd io.WriteCloser = os.Stdout
 
 	if len(output) > 0 {
 		outf = output
 	}
-
-	var fd io.WriteCloser = os.Stdout
 
 	if outf != "-" {
 		var opts uint32
@@ -88,7 +87,7 @@ Options:
 		Die("%s: %s", kn, err)
 	}
 
-	getpw := maybeGetPw(nopw, envpw)
+	getpw := maybeGetPw(nopw, envpw, false)
 	sk, err := sigtool.ParsePrivateKey(skb, getpw)
 	if err != nil {
 		Die("%s: %s", kn, err)
@@ -98,6 +97,9 @@ Options:
 	if err != nil {
 		Die("%s: %s", fn, err)
 	}
+
+	// add an trailing "\n" when writing to file/stdout
+	sig += "\n"
 
 	if err = writeAll(fd, []byte(sig)); err != nil {
 		Die("%s: %s", fn, err)

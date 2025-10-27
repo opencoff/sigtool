@@ -63,8 +63,8 @@ func encrypt(args []string) {
 	var sk *sigtool.PrivateKey
 
 	if len(keyfile) > 0 {
-		getpw := maybeGetPw(nopw, envpw)
-		sk, err = readSK(keyfile, getpw)
+		getpw := maybeGetPw(nopw, envpw, false)
+		sk, err = sigtool.ReadPrivateKey(keyfile, getpw)
 		if err != nil {
 			Die("%s", err)
 		}
@@ -135,13 +135,9 @@ func encrypt(args []string) {
 		outfd = sf
 	}
 
-	en, err := sigtool.NewEncryptor(sk, infd, outfd, blksize)
-	if err != nil {
-		Die("%s", err)
-	}
-
 	// Now find a PK for each recipient
 	errs := 0
+	var rxpk []*sigtool.PublicKey
 	for i := 0; i < len(args); i++ {
 		var err error
 		var pk *sigtool.PublicKey
@@ -156,7 +152,7 @@ func encrypt(args []string) {
 				continue
 			}
 		} else {
-			pk, err = readPK(fn)
+			pk, err = sigtool.ReadPublicKey(fn)
 			if err != nil {
 				Warn("%s", err)
 				errs += 1
@@ -164,7 +160,20 @@ func encrypt(args []string) {
 			}
 		}
 
-		err = en.AddRecipient(pk)
+		rxpk = append(rxpk, pk)
+	}
+
+	if len(rxpk) == 0 {
+		Die("No usable recipient public key")
+	}
+
+	en, err := sigtool.NewEncryptor(sk, rxpk[0], infd, outfd, blksize)
+	if err != nil {
+		Die("%s", err)
+	}
+
+	for i := 1; i < len(rxpk); i++ {
+		err = en.AddRecipient(rxpk[i])
 		if err != nil {
 			Warn("%s", err)
 			errs += 1
@@ -211,20 +220,6 @@ func mustOpen(fn string, flag int) *os.File {
 		Die("can't open file %s: %s", fn, err)
 	}
 	return fdk
-}
-
-// read an SK from a file
-func readSK(fn string, getpw func() ([]byte, error)) (*sigtool.PrivateKey, error) {
-	skb, err := os.ReadFile(fn)
-	if err != nil {
-		return nil, err
-	}
-
-	sk, err := sigtool.ParsePrivateKey(skb, getpw)
-	if err != nil {
-		return nil, fmt.Errorf("private key %s: %w", fn, err)
-	}
-	return sk, nil
 }
 
 // Return true if the file 'infd' and outfn are the same underlying file

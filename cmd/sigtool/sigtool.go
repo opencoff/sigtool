@@ -142,7 +142,7 @@ func writeAll(wr io.Writer, b []byte) error {
 }
 
 // maybeGetPw returns a func that returns a password
-func maybeGetPw(nopw bool, envpw string) func() ([]byte, error) {
+func maybeGetPw(nopw bool, envpw string, repeat bool) func() ([]byte, error) {
 	if nopw {
 		return func() ([]byte, error) {
 			return nil, nil
@@ -155,7 +155,7 @@ func maybeGetPw(nopw bool, envpw string) func() ([]byte, error) {
 	if len(envpw) > 0 {
 		pws = os.Getenv(envpw)
 	} else {
-		pws, err = utils.Askpass("Enter passphrase for private key", false)
+		pws, err = utils.Askpass("Enter passphrase for private key", repeat)
 		if err != nil {
 			Die("%s", err)
 		}

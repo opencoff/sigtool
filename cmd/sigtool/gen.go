@@ -67,7 +67,7 @@ Options:
 		}
 	}
 
-	getpw := maybeGetPw(nopw, envpw)
+	getpw := maybeGetPw(nopw, envpw, true)
 	sk, err := sigtool.NewPrivateKey(comment)
 	if err != nil {
 		Die("%s", err)

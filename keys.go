@@ -27,6 +27,7 @@ import (
 	"encoding/pem"
 	"fmt"
 	"math/big"
+	"os"
 
 	Ed "crypto/ed25519"
 	"golang.org/x/crypto/argon2"
@@ -151,6 +152,21 @@ func ParsePrivateKey(b []byte, getpw func() ([]byte, error)) (*PrivateKey, error
 		return nil, fmt.Errorf("sigtool: PrivateKey: parse: %w", err)
 	}
 
+	return sk, nil
+}
+
+// ReadPrivateKey reads a file containing a private key. The private key
+// can be an OpenSSH Private key (PEM) or a sigtool Private key (PEM).
+func ReadPrivateKey(fn string, getpw func() ([]byte, error)) (*PrivateKey, error) {
+	skb, err := os.ReadFile(fn)
+	if err != nil {
+		return nil, fmt.Errorf("private key: %s: %w", fn, err)
+	}
+
+	sk, err := ParsePrivateKey(skb, getpw)
+	if err != nil {
+		return nil, fmt.Errorf("private key %s: %w", fn, err)
+	}
 	return sk, nil
 }
 
@@ -324,6 +340,26 @@ func ParsePublicKey(b []byte) (*PublicKey, error) {
 	pk, err := makePK(spk.Pk, blk.Headers["comment"])
 	if err != nil {
 		return nil, fmt.Errorf("sigtool: PublicKey: %w", err)
+	}
+	return pk, nil
+}
+
+// ReadPublicKey reads a public key from a file. The public key can be one of:
+// - a string containing the openssh PK
+// - a file containing the openssh PK
+// - a file containing native sigtool PK
+func ReadPublicKey(fn string) (*PublicKey, error) {
+	// first see if we can read the file
+	pkb, err := os.ReadFile(fn)
+	if err != nil {
+		// we couldn't; let's treat it as a string
+		pkb = []byte(fn)
+	}
+
+	// Now parse the public key
+	pk, err := ParsePublicKey(pkb)
+	if err != nil {
+		return nil, err
 	}
 	return pk, nil
 }
