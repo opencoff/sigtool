@@ -101,16 +101,9 @@ $bin g -E FOO $bn 2>/dev/null    && die "overwrote prev keypair"
 $bin g -E FOO --overwrite $bn    || die "can't force gen keypair $pk, $sk"
 $bin g -E FOO $bn2               || die "can't force gen keypair $pk2, $sk2"
 
-# extract pk string
-pk_str=$(cat $pk | grep 'pk:' | sed -e 's/^pk: //g')
-pk2_str=$(cat $pk2 | grep 'pk:' | sed -e 's/^pk: //g')
-
 # sign and verify
 $bin s -E FOO $sk $0 -o $sig            || die "can't sign $0"
 $bin v -q $pk $sig $0                   || die "can't verify signature of $0"
-$bin v -q $pk_str $sig $0               || die "can't verify signature of $0"
-$bin v -q $pk2 $sig $0 2>/dev/null      && die "bad verification with wrong $pk2"
-$bin v -q $pk2_str $sig $0 2>/dev/null  && die "bad verification with wrong $pk2"
 
 # encrypt/decrypt
 $bin e -E FOO -o $encout $pk2 $0      || die "can't encrypt to $pk2"

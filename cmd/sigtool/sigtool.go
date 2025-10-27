@@ -16,6 +16,7 @@ package main
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path"
 	"strings"
@@ -124,6 +125,45 @@ func exists(nm string) bool {
 	}
 
 	return false
+}
+
+// writeAll writes the entire content of 'b' to the writer 'wr'
+func writeAll(wr io.Writer, b []byte) error {
+	n := len(b)
+	for n > 0 {
+		m, err := wr.Write(b)
+		if err != nil {
+			return err
+		}
+		n -= m
+		b = b[m:]
+	}
+	return nil
+}
+
+// maybeGetPw returns a func that returns a password
+func maybeGetPw(nopw bool, envpw string) func() ([]byte, error) {
+	if nopw {
+		return func() ([]byte, error) {
+			return nil, nil
+		}
+	}
+
+	var pws string
+	var err error
+
+	if len(envpw) > 0 {
+		pws = os.Getenv(envpw)
+	} else {
+		pws, err = utils.Askpass("Enter passphrase for private key", false)
+		if err != nil {
+			Die("%s", err)
+		}
+	}
+
+	return func() ([]byte, error) {
+		return []byte(pws), nil
+	}
 }
 
 // This will be filled in by "build"

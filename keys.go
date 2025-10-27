@@ -294,6 +294,17 @@ func skDecrypt(pw []byte, ssk *pb.Sk) ([]byte, error) {
 // ParsePublicKey makes a new public key from a previously serialized byte
 // stream
 func ParsePublicKey(b []byte) (*PublicKey, error) {
+	// We first try to parse this as a openssh public key string
+	if pk, err := parseEncPubKey(b, "cli-openssh-string"); err == nil {
+		return pk, nil
+	}
+
+	// Ok that didn't work; let's try to decode as openssh key
+	if pk, err := parseSSHPublicKey(b); err == nil {
+		return pk, nil
+	}
+
+	// Finally, try to decode as a sigtool key
 	blk, _ := pem.Decode(b)
 	if blk == nil {
 		return nil, fmt.Errorf("sigtool: PublicKey: No PEM")

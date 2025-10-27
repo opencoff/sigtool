@@ -18,7 +18,7 @@ import (
 	"os"
 	"path"
 
-	"github.com/opencoff/go-utils"
+	"github.com/opencoff/go-fio"
 	flag "github.com/opencoff/pflag"
 	"github.com/opencoff/sigtool"
 )
@@ -67,34 +67,46 @@ Options:
 		}
 	}
 
-	var err error
-	var pw []byte
-
-	if !nopw {
-		var pws string
-		if len(envpw) > 0 {
-			pws = os.Getenv(envpw)
-		} else {
-			pws, err = utils.Askpass("Enter passphrase for private key", true)
-			if err != nil {
-				Die("%s", err)
-			}
-		}
-
-		pw = []byte(pws)
-	}
-
-	sk, err := sigtool.NewPrivateKey()
+	getpw := maybeGetPw(nopw, envpw)
+	sk, err := sigtool.NewPrivateKey(comment)
 	if err != nil {
 		Die("%s", err)
 	}
 
-	if err = sk.Serialize(skn, comment, force, pw); err != nil {
+	pk := sk.PublicKey()
+
+	skb, err := sk.Marshal(getpw)
+	if err != nil {
 		Die("%s", err)
 	}
 
-	pk := sk.PublicKey()
-	if err = pk.Serialize(pkn, comment, force); err != nil {
+	pkb, err := pk.Marshal()
+	if err != nil {
 		Die("%s", err)
 	}
+
+	// Now write the files out
+	writeFile(skn, skb, force, 0600)
+	writeFile(pkn, pkb, force, 0644)
+}
+
+func writeFile(fn string, buf []byte, force bool, perm os.FileMode) {
+	var opts uint32
+
+	if force {
+		opts |= fio.OPT_OVERWRITE
+	}
+	sf, err := fio.NewSafeFile(fn, opts, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, perm)
+	if err != nil {
+		Die("%s: %s", fn, err)
+	}
+
+	AtExit(sf.Abort)
+	defer sf.Abort()
+
+	if err = writeAll(sf, buf); err != nil {
+		Die("%s: %s", fn, err)
+	}
+
+	sf.Close()
 }

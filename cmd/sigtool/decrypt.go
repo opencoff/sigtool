@@ -19,7 +19,6 @@ import (
 	"os"
 
 	"github.com/opencoff/go-fio"
-	"github.com/opencoff/go-utils"
 	flag "github.com/opencoff/pflag"
 	"github.com/opencoff/sigtool"
 )
@@ -68,32 +67,19 @@ func decrypt(args []string) {
 	var outfd io.WriteCloser = os.Stdout
 	var inf *os.File
 	var infile string
+	var pk *sigtool.PublicKey
+	var sk *sigtool.PrivateKey
 
-	keyfile := args[0]
-	sk, err := sigtool.ReadPrivateKey(keyfile, func() ([]byte, error) {
-		var pws string
-		if nopw {
-			return nil, nil
-		}
-
-		if len(envpw) > 0 {
-			pws = os.Getenv(envpw)
-		} else {
-			pws, err = utils.Askpass("Enter passphrase for private key", false)
-			if err != nil {
-				Die("%s", err)
-			}
-		}
-		return []byte(pws), nil
-	})
+	// Read the private key first
+	skfile := args[0]
+	getpw := maybeGetPw(nopw, envpw)
+	sk, err = readSK(skfile, getpw)
 	if err != nil {
 		Die("%s", err)
 	}
 
-	var pk *sigtool.PublicKey
-
 	if len(pubkey) > 0 {
-		pk, err = sigtool.ReadPublicKey(pubkey)
+		pk, err = readPK(pubkey)
 		if err != nil {
 			Die("%s", err)
 		}
@@ -115,19 +101,10 @@ func decrypt(args []string) {
 		var mode os.FileMode = 0600 // conservative mode
 
 		if inf != nil {
-			var ist, ost os.FileInfo
-			var err error
-
-			if ost, err = os.Stat(outfile); err != nil {
-				Die("can't stat %s: %s", outfile, err)
-			}
-			if ist, err = inf.Stat(); err != nil {
-				Die("can't stat %s: %s", infile, err)
-			}
-			if os.SameFile(ist, ost) {
+			var same bool
+			if same, mode = sameFile(inf, outfile); same {
 				Die("won't create output file: same as input file!")
 			}
-			mode = ist.Mode()
 		}
 
 		var opts uint32
@@ -169,7 +146,6 @@ func decrypt(args []string) {
 
 }
 
-
 func decryptUsage(fs *flag.FlagSet) {
 	fmt.Printf(`%s decrypt: Decrypt a file.
 
@@ -185,4 +161,3 @@ Options:
 	fs.PrintDefaults()
 	os.Exit(0)
 }
-

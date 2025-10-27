@@ -51,44 +51,36 @@ func encrypt(args []string) {
 		Die("%s", err)
 	}
 
-	if blksize, err = utils.ParseSize(szstr); err != nil {
-		Die("%s", err)
-	}
-
-	var pws, infile string
-	var sk *sigtool.PrivateKey
-
-	if len(keyfile) > 0 {
-		sk, err = sigtool.ReadPrivateKey(keyfile, func() ([]byte, error) {
-			if nopw {
-				return nil, nil
-			}
-			if len(envpw) > 0 {
-				pws = os.Getenv(envpw)
-			} else {
-				pws, err = utils.Askpass("Enter passphrase for private key", false)
-				if err != nil {
-					Die("%s", err)
-				}
-			}
-			return []byte(pws), nil
-		})
-		if err != nil {
-			Die("%s", err)
-		}
-	}
-
 	args = fs.Args()
 	if len(args) < 2 {
 		Die("Insufficient args. Try '%s --help'", os.Args[0])
 	}
 
+	if blksize, err = utils.ParseSize(szstr); err != nil {
+		Die("%s", err)
+	}
+
+	var sk *sigtool.PrivateKey
+
+	if len(keyfile) > 0 {
+		getpw := maybeGetPw(nopw, envpw)
+		sk, err = readSK(keyfile, getpw)
+		if err != nil {
+			Die("%s", err)
+		}
+	}
+
 	var infd io.Reader = os.Stdin
 	var outfd io.WriteCloser = os.Stdout
 	var inf *os.File
+	var infile string
 
+	// The last argument is the input file and everything in between
+	// is a recipient PK. The last argument must be an input file OR
+	// an explicit "-".
 	if len(args) > 1 {
-		infile = args[len(args)-1]
+		n := len(args)
+		infile, args = args[n-1], args[:n-1]
 		if infile != "-" {
 			inf := mustOpen(infile, os.O_RDONLY)
 			defer inf.Close()
@@ -121,22 +113,12 @@ func encrypt(args []string) {
 	if len(outfile) > 0 && outfile != "-" {
 		var mode os.FileMode = 0600 // conservative output mode
 
+		// make sure infile and outfile are not the same underlying file.
 		if inf != nil {
-			var err error
-			var ist, ost os.FileInfo
-
-			if ost, err = os.Stat(outfile); err != nil {
-				Die("can't stat %s: %s", outfile, err)
-			}
-
-			if ist, err = inf.Stat(); err != nil {
-				Die("can't stat %s: %s", infile, err)
-			}
-
-			if os.SameFile(ist, ost) {
+			var same bool
+			if same, mode = sameFile(inf, outfile); same {
 				Die("won't create output file: same as input file!")
 			}
-			mode = ist.Mode()
 		}
 
 		var opts uint32
@@ -158,8 +140,9 @@ func encrypt(args []string) {
 		Die("%s", err)
 	}
 
+	// Now find a PK for each recipient
 	errs := 0
-	for i := 0; i < len(args)-1; i++ {
+	for i := 0; i < len(args); i++ {
 		var err error
 		var pk *sigtool.PublicKey
 
@@ -173,7 +156,7 @@ func encrypt(args []string) {
 				continue
 			}
 		} else {
-			pk, err = sigtool.ReadPublicKey(fn)
+			pk, err = readPK(fn)
 			if err != nil {
 				Warn("%s", err)
 				errs += 1
@@ -183,7 +166,8 @@ func encrypt(args []string) {
 
 		err = en.AddRecipient(pk)
 		if err != nil {
-			Die("%s", err)
+			Warn("%s", err)
+			errs += 1
 		}
 	}
 
@@ -197,7 +181,6 @@ func encrypt(args []string) {
 	}
 	outfd.Close()
 }
-
 
 func encryptUsage(fs *flag.FlagSet) {
 	fmt.Printf(`%s encrypt: Encrypt a file to one or more recipients.
@@ -228,4 +211,37 @@ func mustOpen(fn string, flag int) *os.File {
 		Die("can't open file %s: %s", fn, err)
 	}
 	return fdk
+}
+
+// read an SK from a file
+func readSK(fn string, getpw func() ([]byte, error)) (*sigtool.PrivateKey, error) {
+	skb, err := os.ReadFile(fn)
+	if err != nil {
+		return nil, err
+	}
+
+	sk, err := sigtool.ParsePrivateKey(skb, getpw)
+	if err != nil {
+		return nil, fmt.Errorf("private key %s: %w", fn, err)
+	}
+	return sk, nil
+}
+
+// Return true if the file 'infd' and outfn are the same underlying file
+func sameFile(infd *os.File, outfn string) (bool, os.FileMode) {
+	var ist, ost os.FileInfo
+	var err error
+
+	if ost, err = os.Stat(outfn); err != nil {
+		Die("can't stat %s: %s", outfn, err)
+	}
+	if ist, err = infd.Stat(); err != nil {
+		Die("can't stat %s: %s", infd.Name(), err)
+	}
+
+	if os.SameFile(ist, ost) {
+		return true, 0
+	}
+
+	return false, ist.Mode()
 }

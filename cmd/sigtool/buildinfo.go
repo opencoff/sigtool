@@ -101,7 +101,7 @@ func (bi *BuildInfo) JSON() (string, error) {
 		Replace *struct {
 			Path    string `json:"path,omitempty"`
 			Version string `json:"version,omitempty"`
-			Sum	string  `json:"sum,omitempty"`
+			Sum     string `json:"sum,omitempty"`
 		} `json:"replace,omitempty"`
 	}
 
@@ -169,7 +169,7 @@ func (bi *BuildInfo) JSON() (string, error) {
 				}{
 					Path:    dep.Replace.Path,
 					Version: dep.Replace.Version,
-					Sum:	 dep.Replace.Sum,
+					Sum:     dep.Replace.Sum,
 				}
 			}
 			deps = append(deps, d)

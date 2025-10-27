@@ -19,7 +19,6 @@ import (
 	"os"
 
 	"github.com/opencoff/go-fio"
-	"github.com/opencoff/go-utils"
 	flag "github.com/opencoff/pflag"
 	"github.com/opencoff/sigtool"
 )
@@ -84,33 +83,24 @@ Options:
 		fd = sf
 	}
 
-	sk, err := sigtool.ReadPrivateKey(kn, func() ([]byte, error) {
-		if nopw {
-			return nil, nil
-		}
-
-		var pws string
-		if len(envpw) > 0 {
-			pws = os.Getenv(envpw)
-		} else {
-			pws, err = utils.Askpass("Enter passphrase for private key", false)
-			if err != nil {
-				Die("%s", err)
-			}
-		}
-
-		return []byte(pws), nil
-	})
+	skb, err := os.ReadFile(kn)
 	if err != nil {
-		Die("%s", err)
+		Die("%s: %s", kn, err)
+	}
+
+	getpw := maybeGetPw(nopw, envpw)
+	sk, err := sigtool.ParsePrivateKey(skb, getpw)
+	if err != nil {
+		Die("%s: %s", kn, err)
 	}
 
 	sig, err := sk.SignFile(fn)
 	if err != nil {
-		Die("%s", err)
+		Die("%s: %s", fn, err)
 	}
 
-	sigbytes, err := sig.MarshalBinary(fmt.Sprintf("input=%s", fn))
-	fd.Write(sigbytes)
+	if err = writeAll(fd, []byte(sig)); err != nil {
+		Die("%s: %s", fn, err)
+	}
 	fd.Close()
 }

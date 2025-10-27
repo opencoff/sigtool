@@ -37,7 +37,7 @@ func verify(args []string) {
 Verify an Ed25519 signature in SIG of FILE using a public key PUBKEY.
 The pubkey can be one of:
   - a file: either OpenSSH ed25519 pubkey or a sigtool pubkey
-  - a string: the raw OpenSSH or sigtool pubkey
+  - a string: the raw OpenSSH pubkey
 
 %s will first parse it as a string before trying to parse it as a file.
 
@@ -56,27 +56,19 @@ Options:
 	sn := args[1]
 	fn := args[2]
 
-	// We first try to read the public key as a base64/openssh string
-	pk, err := sigtool.MakePublicKeyFromString(pn)
+	pk, err := readPK(pn)
 	if err != nil {
-		pk, err = sigtool.ReadPublicKey(pn)
-		if err != nil {
-			Die("%s", err)
-		}
+		Die("%s: %s", pn, err)
 	}
 
-	sig, err := sigtool.ReadSignature(sn)
+	sig, err := os.ReadFile(sn)
 	if err != nil {
-		Die("Can't read signature '%s': %s", sn, err)
+		Die("%s: %s", sn, err)
 	}
 
-	if !sig.IsPKMatch(pk) {
-		Die("Wrong public key '%s' for verifying '%s'", pn, sn)
-	}
-
-	ok, err := pk.VerifyFile(fn, sig)
+	ok, err := pk.VerifyFile(fn, string(sig))
 	if err != nil {
-		Die("%s", err)
+		Die("%s: %s", sn, err)
 	}
 
 	exit := 0
@@ -93,4 +85,24 @@ Options:
 	}
 
 	os.Exit(exit)
+}
+
+// read and parse a PK; a PK can be:
+// - a string containing the openssh PK
+// - a file containing the openssh PK
+// - a file containing native sigtool PK
+func readPK(fn string) (*sigtool.PublicKey, error) {
+	// first see if we can read the file
+	pkb, err := os.ReadFile(fn)
+	if err != nil {
+		// we couldn't; let's treat it as a string
+		pkb = []byte(fn)
+	}
+
+	// Now parse the public key
+	pk, err := sigtool.ParsePublicKey(pkb)
+	if err != nil {
+		return nil, err
+	}
+	return pk, nil
 }
