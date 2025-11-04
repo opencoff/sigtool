@@ -84,7 +84,7 @@ const (
 	// The latest version of the tool's output file format
 	_SigtoolVersion = 4
 
-	_chunkSize    uint32 = 4 * 1048576 // 4 MB
+	_chunkSize    uint32 = 128 * 1024
 	_maxChunkSize uint32 = 1 << 30
 	_EOF          uint32 = 1 << 31
 

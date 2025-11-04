@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"math/big"
 	"os"
+	"strings"
 
 	Ed "crypto/ed25519"
 	"golang.org/x/crypto/argon2"
@@ -122,6 +123,17 @@ func ParsePrivateKey(b []byte, getpw func() ([]byte, error)) (*PrivateKey, error
 		return nil, fmt.Errorf("sigtool: PrivateKey: Not sigtool")
 	}
 
+	// validate the headers; without KDF and Algo, we're dead.
+	kdf, ok := blk.Headers["kdf"]
+	if !ok {
+		return nil, fmt.Errorf("sigtool: PrivateKey: Malformed PEM, no KDF")
+	}
+
+	_, a, err := parseKDF(kdf)
+	if err != nil {
+		return nil, fmt.Errorf("sigtool: PrivateKey: %w", err)
+	}
+
 	// Unmarshal first
 	var ssk pb.Sk
 
@@ -141,7 +153,7 @@ func ParsePrivateKey(b []byte, getpw func() ([]byte, error)) (*PrivateKey, error
 		pw = pwx
 	}
 
-	skb, err := skDecrypt(pw, &ssk)
+	skb, err := skDecrypt(pw, &ssk, a)
 	if err != nil {
 		return nil, fmt.Errorf("sigtool: PrivateKey: decrypt: %w", err)
 	}
@@ -219,18 +231,16 @@ func (sk *PrivateKey) Marshal(getpw func() ([]byte, error)) ([]byte, error) {
 	// AES Encrypt the sk
 	esk, salt, err := sk.encrypt(pw)
 	if err != nil {
-		return nil, fmt.Errorf("sigtool: PrivateKey %s: encrypt: %w", sk.Comment, err)
+		return nil, fmt.Errorf("sigtool: PrivateKey %s: marshal: %w", sk.Comment, err)
+	}
+
+	kdf, err := encodeKDF(salt)
+	if err != nil {
+		return nil, fmt.Errorf("sigtool: PrivateKey %s: marshal: %w", sk.Comment, err)
 	}
 
 	ssk := &pb.Sk{
-		Esk:  esk,
-		Salt: salt,
-		Algo: _Sk_algo,
-		Kdf: &pb.Argon{
-			Mem:  _Argon2id_mem,
-			Time: _Argon2id_time,
-			Proc: _Argon2id_proc,
-		},
+		Esk: esk,
 	}
 
 	skb, err := ssk.MarshalVT()
@@ -244,6 +254,7 @@ func (sk *PrivateKey) Marshal(getpw func() ([]byte, error)) ([]byte, error) {
 		Headers: map[string]string{
 			"comment":     sk.Comment,
 			"fingerprint": sk.pk.Fingerprint(),
+			"kdf":         kdf,
 		},
 		Bytes: skb,
 	}
@@ -276,15 +287,10 @@ func (sk *PrivateKey) encrypt(pw []byte) ([]byte, []byte, error) {
 }
 
 // decrypt an encrypted Sk using the given user passphrase and KDF params
-func skDecrypt(pw []byte, ssk *pb.Sk) ([]byte, error) {
-	if ssk.Algo != _Sk_algo {
-		return nil, fmt.Errorf("unknown KDF: %s", ssk.Algo)
-	}
-
+func skDecrypt(pw []byte, ssk *pb.Sk, a *pb.Argon) ([]byte, error) {
 	pwb := sha3.Sum512(pw)
-	kdf := ssk.Kdf
-	buf := argon2.IDKey(pwb[:], ssk.Salt, kdf.Time,
-		kdf.Mem, uint8(0xff&kdf.Proc), uint32(_AEADNonceSize+_AesKeySize))
+	buf := argon2.IDKey(pwb[:], a.Salt, a.Time,
+		a.Mem, uint8(0xff&a.Proc), uint32(_AEADNonceSize+_AesKeySize))
 	key, nonce := buf[:_AesKeySize], buf[_AesKeySize:]
 
 	ciph, err := aes.NewCipher(key)
@@ -486,6 +492,48 @@ func clamp(k []byte) []byte {
 func argonKDF(n int, secret, salt []byte) []byte {
 	return argon2.IDKey(secret, salt, _Argon2id_time,
 		_Argon2id_mem, uint8(0xff&_Argon2id_proc), uint32(n))
+}
+
+func encodeKDF(salt []byte) (string, error) {
+	a := &pb.Argon{
+		Mem:  _Argon2id_mem,
+		Time: _Argon2id_time,
+		Proc: _Argon2id_proc,
+		Salt: salt,
+	}
+
+	b, err := a.MarshalVT()
+	if err != nil {
+		return "", fmt.Errorf("kdf: marshal: %w", err)
+	}
+
+	s := fmt.Sprintf("%s:%s", _Sk_algo, tob64(b))
+	return s, nil
+}
+
+func parseKDF(s string) (string, *pb.Argon, error) {
+	i := strings.Index(s, ":")
+	if i < 0 {
+		return "", nil, fmt.Errorf("kdf: malformed string")
+	}
+	algo, s := s[:i], s[i+1:]
+
+	if algo != _Sk_algo {
+		return "", nil, fmt.Errorf("kdf: %s: unsupported algorithm", algo)
+	}
+
+	// now we have a b64url encoded protobuf.
+	b, err := fromb64(s)
+	if err != nil {
+		return "", nil, fmt.Errorf("kdf: malformed KDF params")
+	}
+
+	var a pb.Argon
+	if err = a.UnmarshalVT(b); err != nil {
+		return "", nil, fmt.Errorf("kdf: unmarshal: %w", err)
+	}
+
+	return algo, &a, nil
 }
 
 // vim: noexpandtab:ts=8:sw=8:tw=92:

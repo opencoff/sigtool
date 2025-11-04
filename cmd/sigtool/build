@@ -30,10 +30,19 @@ Topdir=../..
 # -- DO NOT CHANGE ANYTHING AFTER THIS --
 
 Z=`basename $0`
-PWD=`pwd`
 
+# First make sure we're in the right dir
+dn=$(dirname $0)
+cd $dn
+
+PWD=`pwd`
 # Rebind as abspath
-Topdir=$(cd "${Topdir}" && pwd)
+if [ -f $Topdir/go.mod ]; then
+    Topdir=$(cd "${Topdir}" && pwd)
+elif [ -f ./go.mod ]; then
+    Topdir=$(pwd)
+fi
+
 
 Static=0
 Dryrun=0
@@ -43,6 +52,10 @@ Verbose=0
 Go=`which go`
 Arch=
 Bindir=$Topdir/bin
+
+# tools.go definition - always in the same dir as go.mod
+Tools_go=${Topdir}/tools.go
+
 #e=echo
 
 #set -x
@@ -51,8 +64,37 @@ GoModProxy="https://proxy.golang.org"
 ProtobufRepo="google.golang.org/protobuf"
 VTProtoRepo="github.com/planetscale/vtprotobuf"
 
-# tools.go definition
-Tools_go=./tools.go
+
+host=`uname|tr '[A-Z]' '[a-z]'`
+
+declare -A oses
+declare -A cpus
+declare -A cgo
+
+# Supported & Verified OS/CPU combos for this script
+oslist="linux android openbsd freebsd darwin dragonfly netbsd windows"
+needcgo="android"
+cpulist="i386 amd64 arm arm64"
+cpualias_i386="i486 i586 i686"
+cpualias_amd64="x86_64"
+cpualias_arm64="aarch64"
+
+# CGO Cross-Compilers for various CPU+OS combinations of Android
+android_i386=i686-linux-android-gcc
+android_arm64=aarch64-linux-android-gcc
+android_arm=arm-linux-androideabi-gcc
+
+# initialize the various hash tables
+for o in $oslist;  do oses[$o]=$o; done
+for o in $needcgo; do cgo[$o]=$o;  done
+for c in $cpulist; do
+    cpus[$c]=$c
+    a="cpualias_$c"
+    a=${!a}
+    for x in $a; do cpus[$x]=$c; done
+done
+
+
 
 die() {
     echo "$Z: $@" 1>&2
@@ -172,7 +214,9 @@ Options:
     -n, --dry-run       Dry-run, don't actually build anything [False]
     -t, --test          Run "go test" on modules named on the command line [False]
     -v, --verbose       Build verbosely (adds "-v" to go tooling) [False]
+    -f, --force         Ignore the cache and build everything
     --check-tools       Show the latest version of the protobuf tools
+    --clean             Clean the cache files for this project
     --vet               Run "go vet" on modules named on the command line [False]
     --mod               Run "go mod ..." [False]
     --go=G              Use Go in 'G' [$Go]
@@ -183,40 +227,12 @@ EOF
     exit 0
 }
 
-host=`uname|tr '[A-Z]' '[a-z]'`
-
-declare -A oses
-declare -A cpus
-declare -A cgo
-
-# Supported & Verified OS/CPU combos for this script
-oslist="linux android openbsd freebsd darwin dragonfly netbsd windows"
-needcgo="android"
-cpulist="i386 amd64 arm arm64"
-cpualias_i386="i486 i586 i686"
-cpualias_amd64="x86_64"
-cpualias_arm64="aarch64"
-
-# CGO Cross-Compilers for various CPU+OS combinations of Android
-android_i386=i686-linux-android-gcc
-android_arm64=aarch64-linux-android-gcc
-android_arm=arm-linux-androideabi-gcc
-
-# initialize the various hash tables
-for o in $oslist;  do oses[$o]=$o; done
-for o in $needcgo; do cgo[$o]=$o;  done
-for c in $cpulist; do
-    cpus[$c]=$c
-    a="cpualias_$c"
-    a=${!a}
-    for x in $a; do cpus[$x]=$c; done
-done
-
-
 Tool=
 doinit=0
 args=
 Printarch=0
+Force=0
+Clean=0
 
 #set -x
 ac_prev=
@@ -273,12 +289,20 @@ do
             Tool=mod
             ;;
 
+        --clean)
+            Tool=clean
+            ;;
+
         -V|--version)
             ac_prev=Prodver
             ;;
 
         -v|--verbose)
             Verbose=1
+            ;;
+
+        -f|--force)
+            Force=1
             ;;
 
         -s|--static)
@@ -421,7 +445,6 @@ if [ -n "$Arch" ]; then
 
     export GOOS=$os GOARCH=$cpu
     cross=$os-$cpu
-
 else
     os=$hostos
     cpu=$hostcpu
@@ -485,8 +508,10 @@ repover="main.RepoVersion=$Repover"
 prodver="main.ProductVersion=$Prodver"
 ldflags="-ldflags \"-X $repover -X $prodver $ldflags -buildid=\""
 vflag=""
+aflag=""
 
 [ $Verbose -gt 0 ] && vflag="-v"
+[ $Force   -gt 0 ] && aflag="-a"
 
 case $Tool in
     test)
@@ -502,6 +527,10 @@ case $Tool in
     mod)
         set -- $args
         $e $Go mod $vflag "$@"
+        ;;
+
+    clean)
+        $e $Go clean -cache -testcache
         ;;
 
     *) # Default is to build programs
@@ -538,7 +567,7 @@ case $Tool in
             outbin=$Outdir/$out
             oldbin=$Outdir/$old
             [ -f $outbin ] && mv -f $outbin $oldbin
-            $e eval $Go build $vflag -trimpath -buildvcs=true -o $outbin $isuffix "$ldflags" ./$dir || exit 1
+            $e eval $Go build $aflag $vflag -trimpath -buildvcs=true -o $outbin $isuffix "$ldflags" ./$dir || exit 1
         done
         ;;
 esac
