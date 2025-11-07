@@ -283,3 +283,203 @@ func randint() int {
 func randmod(m int) int {
 	return randint() % m
 }
+
+// Test AuthenticatedSender() method
+func TestAuthenticatedSenderTrue(t *testing.T) {
+	assert := newAsserter(t)
+
+	sender, err := NewPrivateKey("sender")
+	assert(err == nil, "sender SK gen failed: %s", err)
+
+	receiver, err := NewPrivateKey("receiver")
+	assert(err == nil, "receiver SK gen failed: %s", err)
+
+	rxpk := receiver.PublicKey()
+
+	var blkSize int = 512
+	var size int = blkSize * 5
+
+	// cleartext
+	buf := make([]byte, size)
+	for i := 0; i < len(buf); i++ {
+		buf[i] = byte(i & 0xff)
+	}
+
+	rd := bytes.NewBuffer(buf)
+	wr := Buffer{}
+
+	// Encrypt WITH sender authentication
+	ee, err := NewEncryptor(sender, rxpk, rd, &wr, uint64(blkSize))
+	assert(err == nil, "encryptor create fail: %s", err)
+
+	err = ee.Encrypt()
+	assert(err == nil, "encrypt fail: %s", err)
+
+	rd = bytes.NewBuffer(wr.Bytes())
+	wr = Buffer{}
+
+	// Decrypt and verify sender
+	dd, err := NewDecryptor(receiver, sender.PublicKey(), rd, &wr)
+	assert(err == nil, "decryptor create fail: %s", err)
+
+	// IMPORTANT: Check AuthenticatedSender() BEFORE calling Decrypt()
+	isAuth := dd.AuthenticatedSender()
+	assert(isAuth, "AuthenticatedSender() should return true when sender is authenticated")
+
+	err = dd.Decrypt()
+	assert(err == nil, "decrypt fail: %s", err)
+
+	b := wr.Bytes()
+	assert(byteEq(b, buf), "decrypt content mismatch")
+}
+
+func TestAuthenticatedSenderFalse(t *testing.T) {
+	assert := newAsserter(t)
+
+	receiver, err := NewPrivateKey("receiver")
+	assert(err == nil, "receiver SK gen failed: %s", err)
+
+	rxpk := receiver.PublicKey()
+
+	var blkSize int = 512
+	var size int = blkSize * 5
+
+	// cleartext
+	buf := make([]byte, size)
+	for i := 0; i < len(buf); i++ {
+		buf[i] = byte(i & 0xff)
+	}
+
+	rd := bytes.NewBuffer(buf)
+	wr := Buffer{}
+
+	// Encrypt WITHOUT sender authentication (nil sender)
+	ee, err := NewEncryptor(nil, rxpk, rd, &wr, uint64(blkSize))
+	assert(err == nil, "encryptor create fail: %s", err)
+
+	err = ee.Encrypt()
+	assert(err == nil, "encrypt fail: %s", err)
+
+	rd = bytes.NewBuffer(wr.Bytes())
+	wr = Buffer{}
+
+	// Decrypt without expecting sender verification
+	dd, err := NewDecryptor(receiver, nil, rd, &wr)
+	assert(err == nil, "decryptor create fail: %s", err)
+
+	// IMPORTANT: Check AuthenticatedSender() returns false when no sender auth
+	isAuth := dd.AuthenticatedSender()
+	assert(!isAuth, "AuthenticatedSender() should return false when sender is not authenticated")
+
+	err = dd.Decrypt()
+	assert(err == nil, "decrypt fail: %s", err)
+
+	b := wr.Bytes()
+	assert(byteEq(b, buf), "decrypt content mismatch")
+}
+
+func TestAuthenticatedSenderWrongKey(t *testing.T) {
+	assert := newAsserter(t)
+
+	sender, err := NewPrivateKey("sender")
+	assert(err == nil, "sender SK gen failed: %s", err)
+
+	receiver, err := NewPrivateKey("receiver")
+	assert(err == nil, "receiver SK gen failed: %s", err)
+
+	fakeSender, err := NewPrivateKey("fake-sender")
+	assert(err == nil, "fake sender SK gen failed: %s", err)
+
+	rxpk := receiver.PublicKey()
+
+	var blkSize int = 512
+	var size int = blkSize * 5
+
+	// cleartext
+	buf := make([]byte, size)
+	for i := 0; i < len(buf); i++ {
+		buf[i] = byte(i & 0xff)
+	}
+
+	rd := bytes.NewBuffer(buf)
+	wr := Buffer{}
+
+	// Encrypt with REAL sender
+	ee, err := NewEncryptor(sender, rxpk, rd, &wr, uint64(blkSize))
+	assert(err == nil, "encryptor create fail: %s", err)
+
+	err = ee.Encrypt()
+	assert(err == nil, "encrypt fail: %s", err)
+
+	rd = bytes.NewBuffer(wr.Bytes())
+	wr = Buffer{}
+
+	// Try to decrypt expecting WRONG sender - should fail
+	dd, err := NewDecryptor(receiver, fakeSender.PublicKey(), rd, &wr)
+	assert(err != nil, "decryptor should fail with wrong sender public key")
+	assert(dd == nil, "decryptor should be nil when sender verification fails")
+}
+
+func TestAuthenticatedSenderMultiRecipient(t *testing.T) {
+	assert := newAsserter(t)
+
+	sender, err := NewPrivateKey("sender")
+	assert(err == nil, "sender SK gen failed: %s", err)
+
+	var blkSize int = 512
+	var size int = blkSize * 3
+
+	// cleartext
+	buf := make([]byte, size)
+	for i := 0; i < len(buf); i++ {
+		buf[i] = byte(i & 0xff)
+	}
+
+	// Create 3 recipients
+	n := 3
+	rx := make([]*PrivateKey, n)
+	for i := 0; i < n; i++ {
+		r, err := NewPrivateKey(t.Name())
+		assert(err == nil, "can't make receiver SK %d: %s", i, err)
+		rx[i] = r
+	}
+
+	rd := bytes.NewBuffer(buf)
+	wr := Buffer{}
+
+	rx0 := rx[0].PublicKey()
+
+	// Encrypt with sender authentication for multiple recipients
+	ee, err := NewEncryptor(sender, rx0, rd, &wr, uint64(blkSize))
+	assert(err == nil, "encryptor create fail: %s", err)
+
+	for i := 1; i < n; i++ {
+		err = ee.AddRecipient(rx[i].PublicKey())
+		assert(err == nil, "can't add recipient %d: %s", i, err)
+	}
+
+	err = ee.Encrypt()
+	assert(err == nil, "encrypt fail: %s", err)
+
+	encBytes := wr.Bytes()
+	senderPK := sender.PublicKey()
+
+	// Each recipient should be able to decrypt and verify sender
+	for i := 0; i < n; i++ {
+		rd = bytes.NewBuffer(encBytes)
+		wr = Buffer{}
+
+		dd, err := NewDecryptor(rx[i], senderPK, rd, &wr)
+		assert(err == nil, "decryptor %d create fail: %s", i, err)
+
+		// Verify AuthenticatedSender() returns true for all recipients
+		isAuth := dd.AuthenticatedSender()
+		assert(isAuth, "recipient %d: AuthenticatedSender() should return true", i)
+
+		err = dd.Decrypt()
+		assert(err == nil, "decrypt %d fail: %s", i, err)
+
+		b := wr.Bytes()
+		assert(byteEq(b, buf), "decrypt %d content mismatch", i)
+	}
+}
