@@ -31,3 +31,4 @@ bin/*
 *.key
 *.sig
 releases/*
+coverage.out
