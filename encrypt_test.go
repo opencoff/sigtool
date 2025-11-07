@@ -59,6 +59,9 @@ func TestEncryptSimple(t *testing.T) {
 	dd, err := NewDecryptor(sk, nil, rd, &wr)
 	assert(err == nil, "decryptor create fail: %s", err)
 
+	// we should not be able to authenticate sender
+	assert(!dd.AuthenticatedSender(), "decryptor: authenticated empty sender?")
+
 	err = dd.Decrypt()
 	assert(err == nil, "decrypt fail: %s", err)
 
@@ -103,6 +106,7 @@ func TestEncryptSmallSizes(t *testing.T) {
 
 		dd, err := NewDecryptor(rx, nil, rd, &wr)
 		assert(err == nil, "decryptor-%d create fail: %s", i, err)
+		assert(!dd.AuthenticatedSender(), "decryptor-%d: authenticated empty sender?", i)
 
 		err = dd.Decrypt()
 		assert(err == nil, "decrypt-%d fail: %s", i, err)
@@ -201,6 +205,7 @@ func TestEncryptSenderVerified(t *testing.T) {
 	wr = Buffer{}
 	dd, err = NewDecryptor(receiver, sender.PublicKey(), rd, &wr)
 	assert(err == nil, "decryptor create fail: %s", err)
+	assert(dd.AuthenticatedSender(), "decryptor: failed to authenticate sender")
 
 	err = dd.Decrypt()
 	assert(err == nil, "decrypt fail: %s", err)
@@ -252,6 +257,8 @@ func TestEncryptMultiReceiver(t *testing.T) {
 	err = ee.Encrypt()
 	assert(err == nil, "encrypt fail: %s", err)
 
+	// Note: this also tests sender authentication!
+
 	encBytes := wr.Bytes()
 	senderPK := sender.PublicKey()
 	for i := 0; i < n; i++ {
@@ -260,6 +267,8 @@ func TestEncryptMultiReceiver(t *testing.T) {
 
 		dd, err := NewDecryptor(rx[i], senderPK, rd, &wr)
 		assert(err == nil, "decryptor %d create fail: %s", i, err)
+
+		assert(dd.AuthenticatedSender(), "decryptor: failed to authenticate sender")
 
 		err = dd.Decrypt()
 		assert(err == nil, "decrypt %d fail: %s", i, err)
