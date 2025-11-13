@@ -200,6 +200,9 @@ func (e *Encryptor) AddRecipient(pk *PublicKey) error {
 // Encrypt starts the encryption for the input stream 'rd' and writes
 // the encrypted output to the writer 'wr'.
 func (e *Encryptor) Encrypt() error {
+	// Error path: ensure output file is always closed
+	defer e.wr.Close()
+
 	if !e.started {
 		err := e.start()
 		if err != nil {
@@ -211,6 +214,7 @@ func (e *Encryptor) Encrypt() error {
 
 	var i uint32
 	var eof bool
+	var sz uint64
 	for !eof {
 		n, err := io.ReadAtLeast(e.rd, buf, int(e.ChunkSize))
 		if err != nil {
@@ -228,18 +232,19 @@ func (e *Encryptor) Encrypt() error {
 				return err
 			}
 
-			i++
 		}
+		i++
+		sz += uint64(n)
+	}
+
+	if err := e.writeTrailer(i, sz); err != nil {
+		return err
 	}
 
 	return e.wr.Close()
 }
 
 // encrypt exactly _one_ block of data
-// The nonce is constructed from the salt, block# and block-size.
-// This protects the output stream from re-ordering attacks and length
-// modification attacks. The encoded length & block number is used as
-// additional data in the AEAD construction.
 func (e *Encryptor) encrypt(pt []byte, i uint32, eof bool) error {
 
 	ptlen := uint32(len(pt))
@@ -247,27 +252,29 @@ func (e *Encryptor) encrypt(pt []byte, i uint32, eof bool) error {
 		ptlen |= _EOF
 	}
 
-	ad, ct := e.buf[:4], e.buf[4:]
+	var ad [8]byte
 
-	// always tag the length of each chunk
-	enc32(ad, ptlen)
+	lbuf, ct := e.buf[:4], e.buf[4:]
 
-	ct = e.ae.Seal(ct[:0], e.nonce, pt, ad)
+	// we record the length of each chunk as the first
+	enc32(lbuf, ptlen)
+
+	// construct the AD
+	copy(ad[:4], lbuf)
+	enc32(ad[4:], i)
+
+	ct = e.ae.Seal(ct[:0], e.nonce, pt, ad[:])
 
 	incrNonce(e.nonce)
 
-	n := len(ct) + len(ad)
+	n := len(ct) + len(lbuf)
 	err := fullwrite(e.buf[:n], e.wr)
 	if err != nil {
 		return fmt.Errorf("encrypt: chunk %d: %w", i, err)
 	}
 
 	e.hmac.Write(ad[:])
-	e.hmac.Write(pt)
 
-	if eof {
-		return e.writeTrailer()
-	}
 	return nil
 }
 
@@ -281,7 +288,7 @@ func (e *Encryptor) start() error {
 	sumHdr := buffer[_FixedHdrLen+varSize:]
 
 	// scrub the encoded header
-	//defer clear(buffer)
+	defer clear(buffer)
 
 	// Now assemble the fixed header
 	copy(fixHdr[:], []byte(_Magic))
@@ -306,7 +313,7 @@ func (e *Encryptor) start() error {
 	buf := expand(outbuf, e.key, cksum, []byte(_DataKeyExpansion))
 
 	// scrub the buffer used for keys
-	//defer clear(buf)
+	defer clear(buf)
 
 	var dkey, hmackey []byte
 
@@ -346,31 +353,37 @@ func (e *Encryptor) start() error {
 }
 
 // Write a trailer:
+//   - trailer: total blocks and total size
 //   - we always write the hmac
 //   - if authenticating sender, sign the hmac and put the signature in the trailer
 //   - if not authenticating sender, we put random bytes as the signature
-func (e *Encryptor) writeTrailer() error {
+func (e *Encryptor) writeTrailer(nblks uint32, sz uint64) error {
 	var hmac [_Sha3Size]byte
-	var tr []byte
+	var tr [8 + 4]byte
 
+	enc32(tr[:4], nblks)
+	enc64(tr[4:], sz)
+
+	e.hmac.Write(tr[:])
 	e.hmac.Sum(hmac[:0])
 
 	if err := fullwrite(hmac[:], e.wr); err != nil {
 		return fmt.Errorf("encrypt: hmac trailer %w", err)
 	}
 
+	var b []byte
 	if e.auth {
 		// We know sender is non null.
 		sig, err := e.sender.SignMessage(hmac[:])
 		if err != nil {
 			return fmt.Errorf("encrypt: trailer: %w", err)
 		}
-		tr = []byte(sig)
+		b = []byte(sig)
 	} else {
-		tr = []byte(randSig())
+		b = []byte(randSig())
 	}
 
-	if err := fullwrite(tr, e.wr); err != nil {
+	if err := fullwrite(b, e.wr); err != nil {
 		return fmt.Errorf("encrypt: trailer %w", err)
 	}
 	return nil
@@ -503,6 +516,11 @@ func (d *Decryptor) AuthenticatedSender() bool {
 
 // Decrypt starts the decryption by reading from the reader and writing to the writer.
 func (d *Decryptor) Decrypt() error {
+
+	// error path - make sure we close the output file
+	// here, the retval matters less; the other error is more relevant.
+	defer d.wr.Close()
+
 	if d.ae == nil {
 		return ErrNoKey
 	}
@@ -512,88 +530,99 @@ func (d *Decryptor) Decrypt() error {
 	}
 
 	var i uint32
-	for i = 0; ; i++ {
-		eof, err := d.decrypt(i)
+	var sz uint64
+	var eof bool
+	for !eof {
+		var n int
+		var err error
+
+		eof, n, err = d.decrypt(i)
 		if err != nil {
 			return err
 		}
 
-		if eof {
-			break
-		}
+		i++
+		sz += uint64(n)
+	}
+
+	// process the trailer
+	if err := d.processTrailer(i, sz); err != nil {
+		return err
 	}
 
 	return d.wr.Close()
 }
 
 // Decrypt exactly one chunk of data
-func (d *Decryptor) decrypt(i uint32) (bool, error) {
-	var ad [4]byte
+func (d *Decryptor) decrypt(i uint32) (bool, int, error) {
+	var ad [8]byte
 
-	n, err := io.ReadFull(d.rd, ad[:])
+	n, err := io.ReadFull(d.rd, ad[:4])
 	if err != nil {
-		return false, fmt.Errorf("decrypt: read chunk %d: %w", i, err)
+		return false, 0, fmt.Errorf("decrypt: read chunk %d: %w", i, err)
 	}
 
-	ovh := d.ae.Overhead()
-	_, ptlen := dec32[uint32](ad[:])
+	_, ptlen := dec32[uint32](ad[:4])
+
+	// construct the AD
+	enc32(ad[4:], i)
+
+	d.hmac.Write(ad[:])
 
 	eof := (ptlen & _EOF) > 0
 	ptlen &= (_EOF - 1)
 
 	switch {
 	case ptlen > d.ChunkSize:
-		return false, fmt.Errorf("decrypt: chunk %d: too large %d", i, ptlen)
+		return false, 0, fmt.Errorf("decrypt: chunk %d: too large %d", i, ptlen)
 
 	case ptlen == 0:
-		if eof {
-			return true, nil
+		if !eof {
+			return false, 0, fmt.Errorf("decrypt: chunk %d: empty chunk without EOF", i)
 		}
-		return false, fmt.Errorf("decrypt: chunk %d: empty chunk without EOF", i)
 	}
 
+	ovh := d.ae.Overhead()
 	n, err = io.ReadFull(d.rd, d.buf[:int(ptlen)+ovh])
 	if err != nil {
-		return false, fmt.Errorf("decrypt: read chunk %d: %w", i, err)
+		return false, 0, fmt.Errorf("decrypt: read chunk %d: %w", i, err)
 	}
 
 	ct := d.buf[:n]
 	pt, err := d.ae.Open(ct[:0], d.nonce, ct, ad[:])
 	if err != nil {
-		return false, fmt.Errorf("decrypt: chunk %d: %w", i, err)
+		return false, 0, fmt.Errorf("decrypt: chunk %d: %w", i, err)
 	}
 
 	if len(pt) != int(ptlen) {
-		return false, fmt.Errorf("decrypt: chunk %d: unseal exp %d, saw %d", i, ptlen, len(pt))
+		return false, 0, fmt.Errorf("decrypt: chunk %d: unseal exp %d, saw %d", i, ptlen, len(pt))
 	}
 
 	incrNonce(d.nonce)
 
-	d.hmac.Write(ad[:])
-	d.hmac.Write(pt)
 	d.eof = eof
 
 	if len(pt) > 0 {
 		err = fullwrite(pt, d.wr)
 		if err != nil {
-			return false, fmt.Errorf("decrypt: write chunk %d: %w", i, err)
+			return false, 0, fmt.Errorf("decrypt: write chunk %d: %w", i, err)
 		}
 	}
 
-	if eof {
-		return true, d.processTrailer()
-	}
-
-	return eof, nil
+	return eof, int(ptlen), nil
 }
 
 // Setup the decryption keys and prepare to decrypt stream
 func (d *Decryptor) start(key []byte) (*Decryptor, error) {
+	// make sure we scrub this shared key
+	defer clear(key)
+
 	if err := d.verifySender(key, d.sender); err != nil {
 		return nil, fmt.Errorf("decrypt: verify sender: %w", err)
 	}
 
 	outbuf := make([]byte, _Sha3Size+_AesKeySize+_AEADNonceSize)
+	defer clear(outbuf)
 
 	buf := expand(outbuf, key, d.hdrsum, []byte(_DataKeyExpansion))
 
@@ -625,8 +654,12 @@ func (d *Decryptor) start(key []byte) (*Decryptor, error) {
 	return d, nil
 }
 
-func (d *Decryptor) processTrailer() error {
+func (d *Decryptor) processTrailer(nblks uint32, sz uint64) error {
 	var hmac [_Sha3Size]byte
+	var tr [8 + 4]byte
+
+	enc32(tr[:4], nblks)
+	enc64(tr[4:], sz)
 
 	// first read the hmac
 	_, err := io.ReadFull(d.rd, hmac[:])
@@ -634,9 +667,11 @@ func (d *Decryptor) processTrailer() error {
 		return fmt.Errorf("decrypt: premature EOF while reading hmac trailer: %w", err)
 	}
 
+	d.hmac.Write(tr[:])
 	cksum := d.hmac.Sum(nil)
+
 	if subtle.ConstantTimeCompare(hmac[:], cksum) == 0 {
-		return ErrBadTrailer
+		return fmt.Errorf("decrypt: trailer MAC: %w", ErrBadTrailer)
 	}
 
 	sigbuf := make([]byte, sigLen())
@@ -694,6 +729,8 @@ func (e *Encryptor) addSenderSig(sk *PrivateKey) error {
 	buf := make([]byte, _AesKeySize+_AEADNonceSize)
 	buf = expand(buf, e.key, e.Salt, []byte(_WrapSender))
 
+	defer clear(buf)
+
 	ekey, nonce := buf[:_AesKeySize], buf[_AesKeySize:]
 
 	aes, err := aes.NewCipher(ekey)
@@ -720,6 +757,8 @@ func (e *Encryptor) addSenderSig(sk *PrivateKey) error {
 func (d *Decryptor) verifySender(key []byte, senderPk *PublicKey) error {
 	outbuf := make([]byte, _AEADNonceSize+_AesKeySize)
 	buf := expand(outbuf, key, d.Salt, []byte(_WrapSender))
+
+	defer clear(outbuf)
 
 	ekey, nonce := buf[:_AesKeySize], buf[_AesKeySize:]
 
@@ -785,6 +824,7 @@ func (e *Encryptor) wrapKey(pk *PublicKey) (*pb.WrappedKey, error) {
 	salt := randBuf(_RxNonceSize)
 
 	out := make([]byte, _AesKeySize+_RxNonceSize)
+	defer clear(out)
 
 	// We entangle the sender & receiver PKs when we expand the shared secret
 	buf := expand(out[:], sekrit, salt, pk.pk, e.Pk, []byte(_WrapReceiver))
@@ -820,7 +860,10 @@ func (d *Decryptor) unwrapKey(w *pb.WrappedKey, sk *PrivateKey) ([]byte, error) 
 	}
 
 	pk := sk.PublicKey()
+
 	out := make([]byte, _AesKeySize+_RxNonceSize)
+	defer clear(out)
+
 	buf := expand(out[:], sekrit, w.Salt, pk.pk, d.Pk, []byte(_WrapReceiver))
 
 	kek, nonce := buf[:_AesKeySize], buf[_AesKeySize:]

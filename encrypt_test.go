@@ -15,11 +15,39 @@ package sigtool
 
 import (
 	"bytes"
+	"fmt"
 	"testing"
 )
 
 type Buffer struct {
-	bytes.Buffer
+	*bytes.Buffer
+	nm string
+}
+
+func newBuffer(nm string) *Buffer {
+	b := &Buffer{
+		Buffer: &bytes.Buffer{},
+		nm:     nm,
+	}
+	return b
+}
+
+func newBuffer2(nm string, buf []byte) *Buffer {
+	b := &Buffer{
+		Buffer: bytes.NewBuffer(buf),
+		nm:     nm,
+	}
+	return b
+}
+
+func (b *Buffer) Write(z []byte) (int, error) {
+	//fmt.Printf("   buf %s: W %d\n", b.nm, len(z))
+	return b.Buffer.Write(z)
+}
+
+func (b *Buffer) Read(z []byte) (int, error) {
+	n, err := b.Buffer.Read(z)
+	return n, err
 }
 
 func (b *Buffer) Close() error {
@@ -27,6 +55,39 @@ func (b *Buffer) Close() error {
 }
 
 // one sender, one receiver no verification of sender
+func TestEncryptZero(t *testing.T) {
+	assert := newAsserter(t)
+
+	sk, err := NewPrivateKey(t.Name())
+	assert(err == nil, "SK gen failed: %s", err)
+
+	pk := sk.PublicKey()
+
+	// zero sized buffer
+	rd := newBuffer("rd")
+	wr := newBuffer("wr")
+
+	ee, err := NewEncryptor(nil, pk, rd, wr, 512)
+	assert(err == nil, "encryptor create fail: %s", err)
+
+	err = ee.Encrypt()
+	assert(err == nil, "encrypt fail: %s", err)
+
+	rd = newBuffer2("rd2", wr.Bytes())
+	wr = newBuffer("wr2")
+	dd, err := NewDecryptor(sk, nil, rd, wr)
+	assert(err == nil, "decryptor create fail: %s", err)
+
+	// we should not be able to authenticate sender
+	assert(!dd.AuthenticatedSender(), "decryptor: authenticated empty sender?")
+
+	err = dd.Decrypt()
+	assert(err == nil, "decrypt fail: %s", err)
+
+	b := wr.Bytes()
+	assert(len(b) == 0, "decrypt length mismatch: exp %d, saw %d", 0, len(b))
+}
+
 func TestEncryptSimple(t *testing.T) {
 	assert := newAsserter(t)
 
@@ -44,19 +105,19 @@ func TestEncryptSimple(t *testing.T) {
 		buf[i] = byte(i & 0xff)
 	}
 
-	rd := bytes.NewBuffer(buf)
-	wr := Buffer{}
+	rd := newBuffer2("rd", buf)
+	wr := newBuffer("wr")
 
-	ee, err := NewEncryptor(nil, pk, rd, &wr, uint64(blkSize))
+	// zero sized buffer
+	ee, err := NewEncryptor(nil, pk, rd, wr, uint64(blkSize))
 	assert(err == nil, "encryptor create fail: %s", err)
 
 	err = ee.Encrypt()
 	assert(err == nil, "encrypt fail: %s", err)
 
-	rd = bytes.NewBuffer(wr.Bytes())
-
-	wr = Buffer{}
-	dd, err := NewDecryptor(sk, nil, rd, &wr)
+	rd = newBuffer2("rd2", wr.Bytes())
+	wr = newBuffer("wr2")
+	dd, err := NewDecryptor(sk, nil, rd, wr)
 	assert(err == nil, "decryptor create fail: %s", err)
 
 	// we should not be able to authenticate sender
@@ -90,21 +151,22 @@ func TestEncryptSmallSizes(t *testing.T) {
 
 	// encrypt progressively larger bufs
 	for i := 1; i < len(bigbuf); i++ {
+		nm := fmt.Sprintf("rd-%d", i)
 		buf := bigbuf[:i]
 
-		rd := bytes.NewBuffer(buf)
-		wr := Buffer{}
+		rd := newBuffer2(nm, buf)
+		wr := newBuffer(nm)
 
-		ee, err := NewEncryptor(nil, pk, rd, &wr, uint64(blkSize))
+		ee, err := NewEncryptor(nil, pk, rd, wr, uint64(blkSize))
 		assert(err == nil, "encryptor-%d create fail: %s", i, err)
 
 		err = ee.Encrypt()
 		assert(err == nil, "encrypt-%d fail: %s", i, err)
 
-		rd = bytes.NewBuffer(wr.Bytes())
-		wr = Buffer{}
+		rd = newBuffer2(nm+"-2", wr.Bytes())
+		wr = newBuffer(nm + "-2")
 
-		dd, err := NewDecryptor(rx, nil, rd, &wr)
+		dd, err := NewDecryptor(rx, nil, rd, wr)
 		assert(err == nil, "decryptor-%d create fail: %s", i, err)
 		assert(!dd.AuthenticatedSender(), "decryptor-%d: authenticated empty sender?", i)
 
@@ -136,10 +198,10 @@ func TestEncryptCorrupted(t *testing.T) {
 		buf[i] = byte(i & 0xff)
 	}
 
-	rd := bytes.NewReader(buf)
-	wr := Buffer{}
+	rd := newBuffer2("rd", buf)
+	wr := newBuffer("wr")
 
-	ee, err := NewEncryptor(nil, pk, rd, &wr, uint64(blkSize))
+	ee, err := NewEncryptor(nil, pk, rd, wr, uint64(blkSize))
 	assert(err == nil, "encryptor create fail: %s", err)
 
 	err = ee.Encrypt()
@@ -154,9 +216,9 @@ func TestEncryptCorrupted(t *testing.T) {
 		rb[j] = byte(randint() & 0xff)
 	}
 
-	rd = bytes.NewReader(rb)
-	wr = Buffer{}
-	dd, err := NewDecryptor(sk, nil, rd, &wr)
+	rd = newBuffer2("rb", rb)
+	wr = newBuffer("wb")
+	dd, err := NewDecryptor(sk, nil, rd, wr)
 	assert(err != nil, "decryptor works on bad input")
 	assert(dd == nil, "decryptor not nil for bad input")
 }
@@ -182,28 +244,29 @@ func TestEncryptSenderVerified(t *testing.T) {
 		buf[i] = byte(i & 0xff)
 	}
 
-	rd := bytes.NewBuffer(buf)
-	wr := Buffer{}
+	rd := newBuffer2("rd", buf)
+	wr := newBuffer("wr")
 
-	ee, err := NewEncryptor(sender, rxpk, rd, &wr, uint64(blkSize))
+	ee, err := NewEncryptor(sender, rxpk, rd, wr, uint64(blkSize))
 	assert(err == nil, "encryptor create fail: %s", err)
 
 	err = ee.Encrypt()
 	assert(err == nil, "encrypt fail: %s", err)
 
 	badrd := bytes.NewBuffer(wr.Bytes())
-	rd = bytes.NewBuffer(wr.Bytes())
-	wr = Buffer{}
+
+	rd = newBuffer2("rd2", wr.Bytes())
+	wr = newBuffer("wr2")
 
 	randkey, err := NewPrivateKey(t.Name())
 	assert(err == nil, "rand SK gen failed: %s", err)
 
 	// first set wrong keys
-	dd, err := NewDecryptor(randkey, rxpk, badrd, &wr)
+	dd, err := NewDecryptor(randkey, rxpk, badrd, wr)
 	assert(err != nil, "decryptor bad key worked")
 
-	wr = Buffer{}
-	dd, err = NewDecryptor(receiver, sender.PublicKey(), rd, &wr)
+	wr = newBuffer("wr3")
+	dd, err = NewDecryptor(receiver, sender.PublicKey(), rd, wr)
 	assert(err == nil, "decryptor create fail: %s", err)
 	assert(dd.AuthenticatedSender(), "decryptor: failed to authenticate sender")
 
@@ -240,12 +303,12 @@ func TestEncryptMultiReceiver(t *testing.T) {
 		rx[i] = r
 	}
 
-	rd := bytes.NewBuffer(buf)
-	wr := Buffer{}
+	rd := newBuffer2("rd", buf)
+	wr := newBuffer("wr")
 
 	rx0 := rx[0].PublicKey()
 
-	ee, err := NewEncryptor(sender, rx0, rd, &wr, uint64(blkSize))
+	ee, err := NewEncryptor(sender, rx0, rd, wr, uint64(blkSize))
 	assert(err == nil, "encryptor create fail: %s", err)
 
 	for i := 1; i < n; i++ {
@@ -262,10 +325,10 @@ func TestEncryptMultiReceiver(t *testing.T) {
 	encBytes := wr.Bytes()
 	senderPK := sender.PublicKey()
 	for i := 0; i < n; i++ {
-		rd = bytes.NewBuffer(encBytes)
-		wr = Buffer{}
+		rd := newBuffer2("rd2", encBytes)
+		wr := newBuffer("wr2")
 
-		dd, err := NewDecryptor(rx[i], senderPK, rd, &wr)
+		dd, err := NewDecryptor(rx[i], senderPK, rd, wr)
 		assert(err == nil, "decryptor %d create fail: %s", i, err)
 
 		assert(dd.AuthenticatedSender(), "decryptor: failed to authenticate sender")
