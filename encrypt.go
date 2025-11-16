@@ -205,7 +205,6 @@ func (e *Encryptor) Encrypt() error {
 
 	buf := make([]byte, e.ChunkSize)
 
-	fmt.Printf("enc: nonce: %x\n", e.nonce)
 	var i uint32
 	var eof bool
 	var sz uint64
