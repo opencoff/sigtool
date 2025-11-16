@@ -38,26 +38,19 @@
 //    - By using the entire header (including the recipient PKs), we
 //      ensure that any recipient cannot further modify the plaintext
 //      if/when they send to a different recipient.
+//    - The input data is broken up into "chunks"; each no larger than
+//      maxChunkSize. The default block size is "chunkSize" and recorded in
+//      the protobuf header.
+//    - The encrypted block-length is written as a big-endian 4-byte prefix.
+//      The high-order bit of this length field is set for the last-block
+//      (denoting EOF).
 //
-// We also calculate the cumulative hmac-sha3 of the plaintext blocks.
+// We also calculate the cumulative hmac-sha3 of the chunks (sequence number
+// and chunk size). This helps us detect truncated files.
 //    - When sender identity is present, we sign the final hmac and append
 //	the signature as the "trailer".
-//    - When sender identity is NOT present, we simply send the actual
-//      hmac without a signature. In either case, there is a trailer.
-//
-// Note: If the trailer is missing from a sigtool encrypted file - the
-// recipient has no guarantees of content immutability (ie tampering
-// from one of the _other_ recipients).
-//
-// The input data is broken up into "chunks"; each no larger than
-// maxChunkSize. The default block size is "chunkSize". Each block
-// is AEAD encrypted:
-//   AEAD nonce = header.nonce || block#
-//   AD of AEAD = chunk length+eof marker
-//
-// The encrypted block (includes the AEAD tag) length is written
-// as a big-endian 4-byte prefix. The high-order bit of this length
-// field is set for the last-block (denoting EOF).
+//    - When sender identity is NOT present, we append a random looking
+//      signature. In either case, there is a trailer.
 //
 
 package sigtool
@@ -79,7 +72,6 @@ import (
 	"github.com/opencoff/sigtool/internal/pb"
 )
 
-// Encryption chunk size = 4MB
 const (
 	// The latest version of the tool's output file format
 	_SigtoolVersion = 4
@@ -165,6 +157,7 @@ func NewEncryptor(sk *PrivateKey, rx *PublicKey, rd io.Reader, wr io.WriteCloser
 		},
 
 		key:    key,
+		nonce:  make([]byte, _AEADNonceSize),
 		encSK:  esk,
 		sender: sk,
 
@@ -212,6 +205,7 @@ func (e *Encryptor) Encrypt() error {
 
 	buf := make([]byte, e.ChunkSize)
 
+	fmt.Printf("enc: nonce: %x\n", e.nonce)
 	var i uint32
 	var eof bool
 	var sz uint64
@@ -315,11 +309,13 @@ func (e *Encryptor) start() error {
 	// scrub the buffer used for keys
 	defer clear(buf)
 
-	var dkey, hmackey []byte
+	nonce, buf := buf[:_AEADNonceSize], buf[_AEADNonceSize:]
+	dkey, buf := buf[:_AesKeySize], buf[_AesKeySize:]
+	hmackey := buf
 
-	e.nonce, buf = buf[:_AEADNonceSize], buf[_AEADNonceSize:]
-	dkey, buf = buf[:_AesKeySize], buf[_AesKeySize:]
-	hmackey = buf
+	// make sure we save the nonce; it will get zero'd out otherwise
+	// (see defer above!)
+	copy(e.nonce, nonce)
 
 	aes, err := aes.NewCipher(dkey)
 	if err != nil {
@@ -468,6 +464,7 @@ func NewDecryptor(sk *PrivateKey, senderPk *PublicKey, rd io.Reader, wr io.Write
 		sender: senderPk,
 		rd:     rd,
 		wr:     wr,
+		nonce:  make([]byte, _AEADNonceSize),
 		hdrsum: cksum,
 	}
 
@@ -626,11 +623,13 @@ func (d *Decryptor) start(key []byte) (*Decryptor, error) {
 
 	buf := expand(outbuf, key, d.hdrsum, []byte(_DataKeyExpansion))
 
-	var dkey, hmackey []byte
+	nonce, buf := buf[:_AEADNonceSize], buf[_AEADNonceSize:]
+	dkey, buf := buf[:_AesKeySize], buf[_AesKeySize:]
+	hmackey := buf
 
-	d.nonce, buf = buf[:_AEADNonceSize], buf[_AEADNonceSize:]
-	dkey, buf = buf[:_AesKeySize], buf[_AesKeySize:]
-	hmackey = buf
+	// make sure we save the nonce; it will get zero'd out otherwise
+	// (see defer above!)
+	copy(d.nonce, nonce)
 
 	d.hmac = hmac.New(func() hash.Hash {
 		return sha3.New512()
