@@ -301,12 +301,15 @@ func (e *Encryptor) start() error {
 	// now make the data encryption keys, nonces etc.
 	outbuf := make([]byte, _Sha3Size+_AesKeySize+_AEADNonceSize)
 
+	// scrub the buffer used for keys. While this is good hygiene, the go-stdlib
+	// doesn't clear the AES key schedule nor the HMAC ipad/opad. These would likely
+	// require the language to have a formal notion of "destructor" (beyond just
+	// `runtime.SetFinalizer()`).
+	defer clear(outbuf)
+
 	// we mix the header checksum (and it captures the sigtool version, sender
 	// identity, etc.)
 	buf := expand(outbuf, e.key, cksum, []byte(_DataKeyExpansion))
-
-	// scrub the buffer used for keys
-	defer clear(buf)
 
 	nonce, buf := buf[:_AEADNonceSize], buf[_AEADNonceSize:]
 	dkey, buf := buf[:_AesKeySize], buf[_AesKeySize:]
