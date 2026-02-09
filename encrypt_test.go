@@ -343,6 +343,16 @@ func TestEncryptMultiReceiver(t *testing.T) {
 	}
 }
 
+// encOutputSize estimates encrypted output size for buffer pre-allocation.
+// This is a benchmark helper -- intentionally over-estimates slightly for headroom.
+func encOutputSize(inputSize int, chunkSz uint64) int {
+	if inputSize == 0 {
+		return 4096 // header + trailer + EOF chunk
+	}
+	numChunks := (inputSize + int(chunkSz) - 1) / int(chunkSz)
+	return inputSize + numChunks*20 + 4096 // 20 = 4 len + 16 GCM tag; 4096 = header+trailer headroom
+}
+
 func randint() int {
 	for {
 		n := int(randu32())
@@ -354,4 +364,183 @@ func randint() int {
 
 func randmod(m int) int {
 	return randint() % m
+}
+
+// Benchmark encryption without sender authentication.
+func Benchmark_Encrypt(b *testing.B) {
+	rx, _ := NewPrivateKey("bench-rx")
+	rxPK := rx.PublicKey()
+
+	for _, tc := range benchSizes {
+		chunkSz := chunkSizeForFileSize(tc.size)
+
+		b.Run(tc.name, func(b *testing.B) {
+			if testing.Short() && tc.size > 16*1024*1024 {
+				b.Skip("skipping large benchmark in -short mode")
+			}
+
+			b.StopTimer()
+			var pt []byte
+			if tc.size > 0 {
+				pt = randBuf(tc.size)
+			}
+			b.SetBytes(int64(tc.size))
+			outSize := encOutputSize(tc.size, chunkSz)
+			b.StartTimer()
+
+			for i := 0; i < b.N; i++ {
+				rd := newBuffer2("rd", pt)
+				wr := newBuffer("wr")
+				wr.Grow(outSize)
+				ee, err := NewEncryptor(nil, rxPK, rd, wr, chunkSz)
+				if err != nil {
+					b.Fatalf("encryptor: %s", err)
+				}
+				if err = ee.Encrypt(); err != nil {
+					b.Fatalf("encrypt: %s", err)
+				}
+			}
+		})
+	}
+}
+
+// Benchmark decryption without sender authentication.
+func Benchmark_Decrypt(b *testing.B) {
+	rx, _ := NewPrivateKey("bench-rx")
+	rxPK := rx.PublicKey()
+
+	for _, tc := range benchSizes {
+		chunkSz := chunkSizeForFileSize(tc.size)
+
+		b.Run(tc.name, func(b *testing.B) {
+			if testing.Short() && tc.size > 16*1024*1024 {
+				b.Skip("skipping large benchmark in -short mode")
+			}
+
+			b.StopTimer()
+			var pt []byte
+			if tc.size > 0 {
+				pt = randBuf(tc.size)
+			}
+
+			// encrypt once to get ciphertext
+			rd := newBuffer2("rd", pt)
+			wr := newBuffer("wr")
+			ee, err := NewEncryptor(nil, rxPK, rd, wr, chunkSz)
+			if err != nil {
+				b.Fatalf("encryptor setup: %s", err)
+			}
+			if err = ee.Encrypt(); err != nil {
+				b.Fatalf("encrypt setup: %s", err)
+			}
+			ct := wr.Bytes()
+
+			b.SetBytes(int64(tc.size))
+			b.StartTimer()
+
+			for i := 0; i < b.N; i++ {
+				rd := newBuffer2("rd", ct)
+				wr := newBuffer("wr")
+				wr.Grow(tc.size)
+				dd, err := NewDecryptor(rx, nil, rd, wr)
+				if err != nil {
+					b.Fatalf("decryptor: %s", err)
+				}
+				if err = dd.Decrypt(); err != nil {
+					b.Fatalf("decrypt: %s", err)
+				}
+			}
+		})
+	}
+}
+
+// Benchmark encryption with sender authentication.
+func Benchmark_EncryptAuth(b *testing.B) {
+	sender, _ := NewPrivateKey("bench-sender")
+	rx, _ := NewPrivateKey("bench-rx")
+	rxPK := rx.PublicKey()
+
+	for _, tc := range benchSizes {
+		chunkSz := chunkSizeForFileSize(tc.size)
+
+		b.Run(tc.name, func(b *testing.B) {
+			if testing.Short() && tc.size > 16*1024*1024 {
+				b.Skip("skipping large benchmark in -short mode")
+			}
+
+			b.StopTimer()
+			var pt []byte
+			if tc.size > 0 {
+				pt = randBuf(tc.size)
+			}
+			b.SetBytes(int64(tc.size))
+			outSize := encOutputSize(tc.size, chunkSz)
+			b.StartTimer()
+
+			for i := 0; i < b.N; i++ {
+				rd := newBuffer2("rd", pt)
+				wr := newBuffer("wr")
+				wr.Grow(outSize)
+				ee, err := NewEncryptor(sender, rxPK, rd, wr, chunkSz)
+				if err != nil {
+					b.Fatalf("encryptor: %s", err)
+				}
+				if err = ee.Encrypt(); err != nil {
+					b.Fatalf("encrypt: %s", err)
+				}
+			}
+		})
+	}
+}
+
+// Benchmark decryption with sender authentication and verification.
+func Benchmark_DecryptAuth(b *testing.B) {
+	sender, _ := NewPrivateKey("bench-sender")
+	rx, _ := NewPrivateKey("bench-rx")
+	rxPK := rx.PublicKey()
+	senderPK := sender.PublicKey()
+
+	for _, tc := range benchSizes {
+		chunkSz := chunkSizeForFileSize(tc.size)
+
+		b.Run(tc.name, func(b *testing.B) {
+			if testing.Short() && tc.size > 16*1024*1024 {
+				b.Skip("skipping large benchmark in -short mode")
+			}
+
+			b.StopTimer()
+			var pt []byte
+			if tc.size > 0 {
+				pt = randBuf(tc.size)
+			}
+
+			// encrypt once with sender auth
+			rd := newBuffer2("rd", pt)
+			wr := newBuffer("wr")
+			ee, err := NewEncryptor(sender, rxPK, rd, wr, chunkSz)
+			if err != nil {
+				b.Fatalf("encryptor setup: %s", err)
+			}
+			if err = ee.Encrypt(); err != nil {
+				b.Fatalf("encrypt setup: %s", err)
+			}
+			ct := wr.Bytes()
+
+			b.SetBytes(int64(tc.size))
+			b.StartTimer()
+
+			for i := 0; i < b.N; i++ {
+				rd := newBuffer2("rd", ct)
+				wr := newBuffer("wr")
+				wr.Grow(tc.size)
+				dd, err := NewDecryptor(rx, senderPK, rd, wr)
+				if err != nil {
+					b.Fatalf("decryptor: %s", err)
+				}
+				if err = dd.Decrypt(); err != nil {
+					b.Fatalf("decrypt: %s", err)
+				}
+			}
+		})
+	}
 }

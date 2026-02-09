@@ -15,7 +15,7 @@
 
 # list of programs:
 #   srcdir:progname srcdir2:prog2 ...
-Progs=".:sigtool"
+Progs="sigtool:sigtool sigtool-bench:sigtool-bench"
 
 # Relative path to protobuf sources
 # e.g. src/foo/a.proto
@@ -23,7 +23,7 @@ Protobufs=""
 
 # Location of top of the source tree relative to this dir
 # Most often it is ".". But for cmd/sigtool, we have to ascend two dirs
-Topdir=../..
+Topdir=..
 
 #set -x
 

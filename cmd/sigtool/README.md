@@ -23,9 +23,13 @@ Next, build sigtool:
 
     git clone https://github.com/opencoff/sigtool
     cd sigtool
-    ./cmd/sigtool/build -s
+    ./cmd/build -s
 
-The binary will be in `./bin/$HOSTOS-$ARCH/sigtool`.
+This will put two binaries in `./bin/$HOSTOS-$ARCH/sigtool`:
+
+- `sigtool` the main sigtool CLI
+- `sigtool-bench` - a CLI benchmark tool
+
 where `$HOSTOS` is the host OS where you are building (e.g., openbsd)
 and `$ARCH` is the CPU architecture (e.g., amd64).
 

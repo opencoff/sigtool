@@ -1,4 +1,4 @@
-[![GoDoc](https://godoc.org/github.com/opencoff/sigtool/cmd/sigtool?status.svg)](https://godoc.org/github.com/opencoff/sigtool/cmd/sigtool)
+[![GoDoc](https://godoc.org/github.com/opencoff/sigtool?status.svg)](https://godoc.org/github.com/opencoff/sigtool)
 
 # sigtool
 
@@ -46,7 +46,7 @@ files to any recipient identified by their comment in `~/.ssh/authorized_keys`.
 ## Installation
 
 ```bash
-go get github.com/opencoff/sigtool
+go install github.com/opencoff/sigtool/cmd/sigtool
 ```
 
 # Quick Start

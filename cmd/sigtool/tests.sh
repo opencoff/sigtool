@@ -37,9 +37,9 @@ done
 
 # Rebind Topdir as abspath
 Topdir=$(cd ${Topdir} && pwd)
-arch=`./build --print-arch`
+arch=`../build --print-arch`
 bin=$Topdir/bin/$arch/sigtool
-./build || die "can't find & build sigtool"
+../build || die "can't find & build sigtool"
 
 [ -z "$tmpdir" ] && tmpdir=/tmp/sigtool$$
 

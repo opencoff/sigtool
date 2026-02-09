@@ -5,7 +5,7 @@ top = $(pwd)/../..
 .PHONY: all test clean realclean
 
 all:
-	./build -s
+	../build -s -x
 
 test:
 	cd $(top) && go test -v

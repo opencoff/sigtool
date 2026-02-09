@@ -167,4 +167,83 @@ func benchVerify(b *testing.B, buf []byte, sig string, pk *PublicKey) {
 	}
 }
 
+// Benchmark in-memory sign/verify across the standard size distribution.
+func Benchmark_SignMessage(b *testing.B) {
+	sk, _ := NewPrivateKey("bench-signmsg")
+	pk := sk.PublicKey()
+
+	for _, tc := range benchSizes {
+		var buf []byte
+		if tc.size > 0 {
+			buf = randBuf(tc.size)
+		}
+
+		sig, _ := sk.SignMessage(buf)
+
+		b.Run(tc.name+"/sign", func(b *testing.B) {
+			if testing.Short() && tc.size > 16*1024*1024 {
+				b.Skip("skipping large benchmark in -short mode")
+			}
+			b.SetBytes(int64(tc.size))
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				sk.SignMessage(buf)
+			}
+		})
+
+		b.Run(tc.name+"/verify", func(b *testing.B) {
+			if testing.Short() && tc.size > 16*1024*1024 {
+				b.Skip("skipping large benchmark in -short mode")
+			}
+			b.SetBytes(int64(tc.size))
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				pk.VerifyMessage(buf, sig)
+			}
+		})
+	}
+}
+
+// Benchmark file-based sign/verify (exercises mmap path).
+func Benchmark_SignFile(b *testing.B) {
+	sk, _ := NewPrivateKey("bench-signfile")
+	pk := sk.PublicKey()
+
+	for _, tc := range benchSizes {
+		b.Run(tc.name+"/sign", func(b *testing.B) {
+			if testing.Short() && tc.size > 16*1024*1024 {
+				b.Skip("skipping large benchmark in -short mode")
+			}
+
+			b.StopTimer()
+			fn := createTempFile(b, tc.size)
+			b.SetBytes(int64(tc.size))
+			b.StartTimer()
+
+			for i := 0; i < b.N; i++ {
+				sk.SignFile(fn)
+			}
+		})
+
+		b.Run(tc.name+"/verify", func(b *testing.B) {
+			if testing.Short() && tc.size > 16*1024*1024 {
+				b.Skip("skipping large benchmark in -short mode")
+			}
+
+			b.StopTimer()
+			fn := createTempFile(b, tc.size)
+			sig, err := sk.SignFile(fn)
+			if err != nil {
+				b.Fatalf("sign for verify setup: %s", err)
+			}
+			b.SetBytes(int64(tc.size))
+			b.StartTimer()
+
+			for i := 0; i < b.N; i++ {
+				pk.VerifyFile(fn, sig)
+			}
+		})
+	}
+}
+
 // vim: noexpandtab:ts=8:sw=8:tw=92:
