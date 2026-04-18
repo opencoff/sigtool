@@ -16,7 +16,6 @@ package main
 import (
 	"fmt"
 	"io"
-	"io/ioutil"
 	"os"
 	"strings"
 
@@ -96,7 +95,7 @@ func encrypt(args []string) {
 	}
 
 	authkeys := fmt.Sprintf("%s/.ssh/authorized_keys", home)
-	authdata, err := ioutil.ReadFile(authkeys)
+	authdata, err := os.ReadFile(authkeys)
 	if err != nil {
 		if !os.IsNotExist(err) {
 			Die("can't open %s: %s", authkeys, err)

@@ -14,6 +14,7 @@
 package sigtool
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -30,6 +31,20 @@ EqonEnGrEFHEqrQjAAAAE3Rlc3QtdW5lbmNyeXB0ZWQta2V5AQIDBA==
 
 // Test fixture: OpenSSH Ed25519 public key (for the unencrypted private key above)
 const sshPublicKeyUnencrypted = `ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGrEqdUYglEjCdglUlDt1LvErEEfEqonEnGrEFHEqrQj test-unencrypted-key`
+
+// Test fixture: OpenSSH Ed25519 private key encrypted with aes256-ctr + bcrypt KDF.
+// Passphrase: "testpass123". Generated with `ssh-keygen -t ed25519 -N testpass123`.
+const sshPrivateKeyEncrypted = `-----BEGIN OPENSSH PRIVATE KEY-----
+b3BlbnNzaC1rZXktdjEAAAAACmFlczI1Ni1jdHIAAAAGYmNyeXB0AAAAGAAAABBkmGZfMF
+FwZ4M4nA99j1EZAAAAGAAAAAEAAAAzAAAAC3NzaC1lZDI1NTE5AAAAINaenRVZPffcRhAa
+GZkD+1mkT7D3JnmrkNmAk6YPnQ3WAAAAoJGYR7UsCdah/aZIQmBGarUi3XQxtPlygfTcAh
+98e10xC6GP5Bzarhy6xFHzjMwNu7S4kdo0mx/1CgUMTqHf73cFtSyncqwOYiD2kB/JRdIL
+nVQNCvIIZ/mWASwn8fTgbedaNg78EJnC9Qh28D4fEibB1vYmfqKLjLgcLKsybRmreAjpox
+SPys89iW98zM16k3TGPLQO2rPamkPHJuEqqn4=
+-----END OPENSSH PRIVATE KEY-----
+`
+
+const sshPrivateKeyEncryptedPw = "testpass123"
 
 // Multiple keys in authorized_keys format
 const authorizedKeysMultiple = `# This is a comment
@@ -225,6 +240,35 @@ func TestParseAuthorizedKeysVerifySignatures(t *testing.T) {
 	// This would require either:
 	// 1. Real ssh-keygen generated keys
 	// 2. Or implementing SSH signature format (different from sigtool)
+}
+
+// TestSSHPrivateKeyEncrypted exercises parseOpenSSHPrivateKey on an
+// aes256-ctr + bcrypt-KDF encrypted key — the branch that extractBcryptIvBlock
+// lives on. The happy path, a wrong passphrase, and a nil getpw callback are
+// all verified.
+func TestSSHPrivateKeyEncrypted(t *testing.T) {
+	assert := newAsserter(t)
+
+	// Happy path: correct passphrase
+	sk, err := parseSSHPrivateKey([]byte(sshPrivateKeyEncrypted), func() ([]byte, error) {
+		return []byte(sshPrivateKeyEncryptedPw), nil
+	})
+	assert(err == nil, "parse encrypted ssh key: %s", err)
+	assert(sk != nil, "parse encrypted ssh key: nil sk")
+	assert(sk.Comment == "fuzz-test-encrypted", "comment mismatch: got %q", sk.Comment)
+
+	// Wrong passphrase — KDF produces a different AES key, unmarshal of the
+	// inner block fails (Check1 != Check2) → ErrIncorrectPassword.
+	_, err = parseSSHPrivateKey([]byte(sshPrivateKeyEncrypted), func() ([]byte, error) {
+		return []byte("not-the-right-one"), nil
+	})
+	assert(err != nil, "wrong passphrase accepted")
+
+	// getpw returns an error — propagates up.
+	_, err = parseSSHPrivateKey([]byte(sshPrivateKeyEncrypted), func() ([]byte, error) {
+		return nil, fmt.Errorf("synthetic pw failure")
+	})
+	assert(err != nil, "nil getpw should surface an error")
 }
 
 // vim: noexpandtab:ts=8:sw=8:tw=92:

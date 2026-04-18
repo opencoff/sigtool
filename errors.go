@@ -42,4 +42,6 @@ var (
 	ErrBadFormat         = errors.New("ssh: invalid openssh private key format")
 	ErrBadLength         = errors.New("ssh: private key unexpected length")
 	ErrBadPadding        = errors.New("ssh: padding not as expected")
+	ErrBadCiphertextLen  = errors.New("ssh: malformed ciphertext length")
+	ErrBadKDFParams      = errors.New("sigtool: invalid argon2 KDF parameters")
 )

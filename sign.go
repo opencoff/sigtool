@@ -59,7 +59,7 @@ func (sk *PrivateKey) SignMessage(msg []byte) (string, error) {
 // Read and sign a file
 //
 // We calculate the signature differently here: We first calculate
-// the SHA-512 checksum of the file and its size. We sign the
+// the SHA3-512 checksum of the file and its size. We sign the
 // checksum.
 func (sk *PrivateKey) SignFile(fn string) (string, error) {
 	ck, err := fileCksum(fn, func() hash.Hash {
@@ -171,12 +171,20 @@ func randSig() string {
 	return fmt.Sprintf("%s.%s", tob64(fp), tob64(sig))
 }
 
-// make a null/empty sig
-func nullSig() string {
-	var zfp [_FpSize]byte
-	var zsig [Ed.SignatureSize]byte
+// signRaw produces a raw Ed25519 signature over msg. No prefix, no encoding,
+// no fingerprint wrapping — for internal callers that handle those layers
+// themselves (e.g. per-capsule signing during encrypt).
+func (sk *PrivateKey) signRaw(msg []byte) ([]byte, error) {
+	x := Ed.PrivateKey(sk.sk)
+	return x.Sign(rand.Reader, msg, crypto.Hash(0))
+}
 
-	return fmt.Sprintf("%s.%s", tob64(zfp[:]), tob64(zsig[:]))
+// verifyRaw verifies a raw Ed25519 signature over msg.
+func (pk *PublicKey) verifyRaw(msg, sig []byte) bool {
+	if len(sig) != Ed.SignatureSize {
+		return false
+	}
+	return Ed.Verify(Ed.PublicKey(pk.pk), msg, sig)
 }
 
 // vim: noexpandtab:ts=8:sw=8:tw=92:

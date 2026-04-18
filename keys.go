@@ -98,9 +98,11 @@ func NewPrivateKey(comment string) (*PrivateKey, error) {
 	sk := &PrivateKey{
 		sk:      []byte(skb),
 		Comment: comment,
+		ck:      ed25519SKToCurve([]byte(skb)),
 		pk: &PublicKey{
 			pk:      []byte(pkb),
 			Comment: comment,
+			ck:      ed25519PKToCurve([]byte(pkb)),
 			fp:      pkhash([]byte(pkb)),
 		},
 	}
@@ -198,19 +200,9 @@ func (sk *PrivateKey) Equal(other *PrivateKey) bool {
 	return subtle.ConstantTimeCompare(sk.sk, other.sk) == 1
 }
 
-// ToCurve25519 converts an ed25519 private key to its corresponding
-// curve25519 private key
+// ToCurve25519 returns the Curve25519 private key corresponding to this
+// Ed25519 private key. The value is computed at construction time.
 func (sk *PrivateKey) ToCurve25519() []byte {
-	if sk.ck == nil {
-		var ek [64]byte
-
-		h := sha512.New()
-		h.Write(sk.sk[:32])
-		h.Sum(ek[:0])
-
-		sk.ck = clamp(ek[:32])
-	}
-
 	return sk.ck
 }
 
@@ -267,8 +259,12 @@ func (sk *PrivateKey) Marshal(getpw func() ([]byte, error)) ([]byte, error) {
 // default argon2id params
 func (sk *PrivateKey) encrypt(pw []byte) ([]byte, []byte, error) {
 	pwb := sha3.Sum512(pw)
+	defer clear(pwb[:])
+
 	salt := randBuf(32)
 	buf := argonKDF(_AEADNonceSize+_AesKeySize, pwb[:], salt)
+	defer clear(buf)
+
 	key, nonce := buf[:_AesKeySize], buf[_AesKeySize:]
 
 	ciph, err := aes.NewCipher(key)
@@ -288,9 +284,17 @@ func (sk *PrivateKey) encrypt(pw []byte) ([]byte, []byte, error) {
 
 // decrypt an encrypted Sk using the given user passphrase and KDF params
 func skDecrypt(pw []byte, ssk *pb.Sk, a *pb.Argon) ([]byte, error) {
+	if err := validateArgonParams(a); err != nil {
+		return nil, err
+	}
+
 	pwb := sha3.Sum512(pw)
+	defer clear(pwb[:])
+
 	buf := argon2.IDKey(pwb[:], a.Salt, a.Time,
-		a.Mem, uint8(0xff&a.Proc), uint32(_AEADNonceSize+_AesKeySize))
+		a.Mem, uint8(a.Proc), uint32(_AEADNonceSize+_AesKeySize))
+	defer clear(buf)
+
 	key, nonce := buf[:_AesKeySize], buf[_AesKeySize:]
 
 	ciph, err := aes.NewCipher(key)
@@ -380,41 +384,10 @@ func (pk *PublicKey) Equal(other *PublicKey) bool {
 	return subtle.ConstantTimeCompare(pk.pk, other.pk) == 1
 }
 
-// ToCurve25519 converts an Ed25519 Public Key to its corresponding Curve25519
-// public key. This is directly from github.com/FiloSottile/age.
+// ToCurve25519 returns the Curve25519 public key corresponding to this
+// Ed25519 public key. The value is computed at construction time.
 func (pk *PublicKey) ToCurve25519() []byte {
-	if pk.ck != nil {
-		return pk.ck
-	}
-
-	// ed25519.PublicKey is a little endian representation of the y-coordinate,
-	// with the most significant bit set based on the sign of the x-ccordinate.
-	bigEndianY := make([]byte, Ed.PublicKeySize)
-	for i, b := range pk.pk {
-		bigEndianY[Ed.PublicKeySize-i-1] = b
-	}
-	bigEndianY[0] &= 0b0111_1111
-
-	// The Montgomery u-coordinate is derived through the bilinear map
-	//
-	//     u = (1 + y) / (1 - y)
-	//
-	// See https://blog.filippo.io/using-ed25519-keys-for-encryption.
-	y := new(big.Int).SetBytes(bigEndianY)
-	denom := big.NewInt(1)
-	denom.ModInverse(denom.Sub(denom, y), curve25519P) // 1 / (1 - y)
-	u := y.Mul(y.Add(y, big.NewInt(1)), denom)
-	u.Mod(u, curve25519P)
-
-	out := make([]byte, 32)
-	uBytes := u.Bytes()
-	n := len(uBytes)
-	for i, b := range uBytes {
-		out[n-i-1] = b
-	}
-
-	pk.ck = out
-	return out
+	return pk.ck
 }
 
 // Marshal marshals the public key in sigtool native format
@@ -457,12 +430,14 @@ func makeSK(skb []byte, comm string) (*PrivateKey, error) {
 	pk := &PublicKey{
 		pk:      edpk,
 		Comment: comm,
+		ck:      ed25519PKToCurve(edpk),
 		fp:      pkhash(edpk),
 	}
 
 	sk := &PrivateKey{
 		sk:      skb,
 		Comment: comm,
+		ck:      ed25519SKToCurve(skb),
 		pk:      pk,
 	}
 
@@ -477,6 +452,7 @@ func makePK(pkb []byte, comm string) (*PublicKey, error) {
 	pk := &PublicKey{
 		pk:      pkb,
 		Comment: comm,
+		ck:      ed25519PKToCurve(pkb),
 		fp:      pkhash(pkb),
 	}
 	return pk, nil
@@ -489,9 +465,84 @@ func clamp(k []byte) []byte {
 	return k
 }
 
+// ed25519SKToCurve derives the Curve25519 private scalar from an Ed25519
+// private key (64-byte seed||pk form). The result is a fresh 32-byte slice.
+func ed25519SKToCurve(sk []byte) []byte {
+	h := sha512.Sum512(sk[:32])
+	defer clear(h[:])
+
+	out := make([]byte, 32)
+	copy(out, h[:32])
+	return clamp(out)
+}
+
+// ed25519PKToCurve derives the Curve25519 public point from an Ed25519
+// public key via the birational map. From github.com/FiloSottile/age.
+func ed25519PKToCurve(pk []byte) []byte {
+	// ed25519.PublicKey is a little-endian representation of the y-coordinate,
+	// with the most significant bit set based on the sign of the x-coordinate.
+	bigEndianY := make([]byte, Ed.PublicKeySize)
+	for i, b := range pk {
+		bigEndianY[Ed.PublicKeySize-i-1] = b
+	}
+	bigEndianY[0] &= 0b0111_1111
+
+	// The Montgomery u-coordinate is derived through the bilinear map
+	//     u = (1 + y) / (1 - y)
+	// See https://blog.filippo.io/using-ed25519-keys-for-encryption.
+	y := new(big.Int).SetBytes(bigEndianY)
+	denom := big.NewInt(1)
+	denom.ModInverse(denom.Sub(denom, y), curve25519P)
+	u := y.Mul(y.Add(y, big.NewInt(1)), denom)
+	u.Mod(u, curve25519P)
+
+	out := make([]byte, 32)
+	uBytes := u.Bytes()
+	n := len(uBytes)
+	for i, b := range uBytes {
+		out[n-i-1] = b
+	}
+	return out
+}
+
 func argonKDF(n int, secret, salt []byte) []byte {
 	return argon2.IDKey(secret, salt, _Argon2id_time,
 		_Argon2id_mem, uint8(0xff&_Argon2id_proc), uint32(n))
+}
+
+// bounds for attacker-supplied Argon2id parameters when parsing a sigtool
+// PEM. These gates exist because the stdlib argon2 package panics on Time=0,
+// truncates Proc silently, and will happily allocate terabytes for large Mem.
+const (
+	_Argon_minTime uint32 = 1
+	_Argon_maxTime uint32 = 1024
+	_Argon_minMem  uint32 = 8       // argon2 requires >= 8 KiB per lane
+	_Argon_maxMem  uint32 = 1 << 20 // 1 GiB — ours is 64 MiB
+	_Argon_minProc uint32 = 1
+	_Argon_maxProc uint32 = 255 // must fit in uint8
+	_Argon_minSalt int    = 8   // argon2 spec minimum
+	_Argon_maxSalt int    = 128
+)
+
+// validateArgonParams range-checks attacker-controlled Argon2id parameters
+// before we hand them to the argon2 library.
+func validateArgonParams(a *pb.Argon) error {
+	if a == nil {
+		return ErrBadKDFParams
+	}
+	if a.Time < _Argon_minTime || a.Time > _Argon_maxTime {
+		return ErrBadKDFParams
+	}
+	if a.Mem < _Argon_minMem || a.Mem > _Argon_maxMem {
+		return ErrBadKDFParams
+	}
+	if a.Proc < _Argon_minProc || a.Proc > _Argon_maxProc {
+		return ErrBadKDFParams
+	}
+	if n := len(a.Salt); n < _Argon_minSalt || n > _Argon_maxSalt {
+		return ErrBadKDFParams
+	}
+	return nil
 }
 
 func encodeKDF(salt []byte) (string, error) {

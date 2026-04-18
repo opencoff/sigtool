@@ -16,31 +16,10 @@ package sigtool
 import (
 	"encoding/binary"
 	"fmt"
-	"github.com/opencoff/go-fio"
 	"github.com/opencoff/go-mmap"
 	"hash"
 	"os"
 )
-
-// Simple function to reliably write data to a file.
-// Does MORE than ioutil.WriteFile() - in that it doesn't trash the
-// existing file with an incomplete write.
-func writeFile(fn string, b []byte, ovwrite bool, mode uint32) error {
-	var opts uint32
-	if ovwrite {
-		opts |= fio.OPT_OVERWRITE
-	}
-	sf, err := fio.NewSafeFile(fn, opts, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, os.FileMode(mode))
-	if err != nil {
-		return err
-	}
-	defer sf.Abort()
-	if _, err = sf.Write(b); err != nil {
-		return err
-	}
-
-	return sf.Close()
-}
 
 // Generate file checksum out of hash function h
 func fileCksum(fn string, f func() hash.Hash) ([]byte, error) {

@@ -12,45 +12,56 @@
 // suitability for any purpose.
 //
 
-// Implementation Notes for Encryption/Decryption:
+// Implementation Notes for Encryption/Decryption (wire format v5):
 //
-// Header: has 3 parts:
+// Header: has 3 parts
 //    - Fixed sized header
 //    - Variable sized protobuf encoded header
-//    - SHA256 sum of both above.
+//    - SHA3-512 sum of both above
 //
 // Fixed size header:
-//    - Magic: 7 bytes
+//    - Magic:   7 bytes ("SigTool")
 //    - Version: 1 byte
-//    - VLen:    4 byte
+//    - VLen:    4 bytes (big-endian, length of the protobuf segment)
 //
-// Variable Length Segment:
-//    - Protobuf encoded, per-recipient wrapped keys
+// Variable length segment (protobuf):
+//    - chunk_size, master salt, sender's ephemeral curve25519 PK
+//    - a list of per-recipient wrapped_key entries
 //
-// The variable length segment consists of one or more
-// recipients, each with their individually wrapped keys.
+// Each wrapped_key entry holds:
+//    - d_key: AES-GCM-256 ciphertext of (root_key || capsule_sig), sealed
+//      under a KEK derived from DH(ephemeral_SK, recipient_PK). Plaintext is
+//      96 bytes (32 + 64); ciphertext is 96 + 16 = 112 bytes. The signature
+//      is carried *inside* the AEAD blob — never in plaintext — so an
+//      eavesdropper cannot tell from the header whether the file was
+//      authenticated by the sender.
+//    - salt: per-capsule random salt feeding the KEK HKDF.
 //
-// The input data is encrypted with an expanded random 32-byte key:
-//    - hkdf-sha3 of random key, salt, context
-//    - the hkdf process yields a data-encryption key, nonce and hmac key.
-//    - we use the header checksum as the 'salt' for HKDF; this ensures that
-//      any modification of the header yields different keys
-//    - By using the entire header (including the recipient PKs), we
-//      ensure that any recipient cannot further modify the plaintext
-//      if/when they send to a different recipient.
-//    - The input data is broken up into "chunks"; each no larger than
-//      maxChunkSize. The default block size is "chunkSize" and recorded in
-//      the protobuf header.
-//    - The encrypted block-length is written as a big-endian 4-byte prefix.
-//      The high-order bit of this length field is set for the last-block
-//      (denoting EOF).
+// Sender authentication:
+//    - The sender signs one signature per recipient, over:
+//        capsule_hash = SHA3-512(header_hash || recipient_PK || sender_PK)
+//      where:
+//        header_hash  = SHA3-512(ephemeral_PK || master_salt || root_key)
+//    - This binds the signature to (sender, this recipient, this file's keys).
+//      A recipient cannot re-target the signature at a different recipient,
+//      because cap_hash changes with recipient_PK.
+//    - Unauthenticated files carry 64 zero bytes in the signature slot.
+//      Only the recipient, after successful AEAD unwrap, can tell.
 //
-// We also calculate the cumulative hmac-sha3 of the chunks (sequence number
-// and chunk size). This helps us detect truncated files.
-//    - When sender identity is present, we sign the final hmac and append
-//	the signature as the "trailer".
-//    - When sender identity is NOT present, we append a random looking
-//      signature. In either case, there is a trailer.
+// Data encryption:
+//    - Root key: random 32 bytes. HKDF-SHA3 expands (root_key, header_cksum)
+//      into the AES-GCM key, nonce, and chunk-HMAC key.
+//    - Using the header checksum as HKDF salt binds every data chunk to the
+//      full header — any header modification invalidates decryption.
+//    - Data is split into chunks (default 128 KiB, max 1 GiB). Each chunk
+//      is individually AEAD-sealed; the chunk length and index form the AD.
+//      The top bit of the chunk length marks EOF.
+//
+// Trailer:
+//    - Cumulative HMAC-SHA3-512 of the chunk ADs (detects truncation/reordering).
+//    - When the sender is authenticated, the trailer also carries an Ed25519
+//      signature over the HMAC. Unauthenticated files carry a random-looking
+//      trailer sig so files are indistinguishable in length/shape.
 //
 
 package sigtool
@@ -59,6 +70,7 @@ import (
 	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
+	Ed "crypto/ed25519"
 	"crypto/hmac"
 	"crypto/sha3"
 	"crypto/subtle"
@@ -67,14 +79,13 @@ import (
 	"golang.org/x/crypto/hkdf"
 	"hash"
 	"io"
-	"os"
 
 	"github.com/opencoff/sigtool/internal/pb"
 )
 
 const (
 	// The latest version of the tool's output file format
-	_SigtoolVersion = 4
+	_SigtoolVersion = 5
 
 	_chunkSize    uint32 = 128 * 1024
 	_maxChunkSize uint32 = 1 << 30
@@ -85,14 +96,12 @@ const (
 	_FixedHdrLen = _MagicLen + 1 + 4 // 1: version, 4: len of variable segment
 
 	_Sha3Size      = 64
-	_Sha3Size256   = 32
 	_AesKeySize    = 32
 	_AEADNonceSize = 12
 	_SaltSize      = 32
 	_RxNonceSize   = 12 // nonce size of per-recipient encrypted blocks
 
 	_WrapReceiver     = "Receiver Key"
-	_WrapSender       = "Sender Sig"
 	_DataKeyExpansion = "Data Key Expansion"
 )
 
@@ -113,11 +122,14 @@ type Encryptor struct {
 	// sender identity
 	sender *PrivateKey
 
+	// hash binding ephemeral PK, salt and root key — fed into each per-capsule sig
+	hdrHash []byte
+
 	// reader and writer
 	rd io.Reader
 	wr io.WriteCloser
 
-	auth    bool // set if the sender idetity is sent
+	auth    bool // set if the sender identity is signed into each capsule
 	started bool
 }
 
@@ -160,20 +172,42 @@ func NewEncryptor(sk *PrivateKey, rx *PublicKey, rd io.Reader, wr io.WriteCloser
 		nonce:  make([]byte, _AEADNonceSize),
 		encSK:  esk,
 		sender: sk,
+		auth:   sk != nil,
 
 		rd: rd,
 		wr: wr,
 	}
 
-	if err = e.addSenderSig(sk); err != nil {
-		return nil, fmt.Errorf("encrypt: %w", err)
-	}
+	e.hdrHash = headerHash(e.Pk, e.Salt, e.key)
 
 	if err = e.AddRecipient(rx); err != nil {
 		return nil, err
 	}
 
 	return e, nil
+}
+
+// headerHash binds the sender's ephemeral PK, the master salt, and the root
+// data-encryption key. It feeds every per-capsule signature so that any
+// modification to these inputs invalidates authentication.
+func headerHash(ephPk, salt, key []byte) []byte {
+	var out [_Sha3Size]byte
+	h := sha3.New512()
+	h.Write(ephPk)
+	h.Write(salt)
+	h.Write(key)
+	return h.Sum(out[:0])
+}
+
+// capsuleHash is what the sender signs for each recipient. It binds the
+// header hash to the specific (recipient, sender) pair.
+func capsuleHash(hdrHash, recipientPk, senderPk []byte) []byte {
+	var out [_Sha3Size]byte
+	h := sha3.New512()
+	h.Write(hdrHash)
+	h.Write(recipientPk)
+	h.Write(senderPk)
+	return h.Sum(out[:0])
 }
 
 // Add a new recipient to this encryption context.
@@ -193,8 +227,14 @@ func (e *Encryptor) AddRecipient(pk *PublicKey) error {
 // Encrypt starts the encryption for the input stream 'rd' and writes
 // the encrypted output to the writer 'wr'.
 func (e *Encryptor) Encrypt() error {
-	// Error path: ensure output file is always closed
-	defer e.wr.Close()
+	// Error path: ensure output file is closed. Cleared on the happy path
+	// so we don't double-close.
+	closed := false
+	defer func() {
+		if !closed {
+			e.wr.Close()
+		}
+	}()
 
 	if !e.started {
 		err := e.start()
@@ -234,6 +274,7 @@ func (e *Encryptor) Encrypt() error {
 		return err
 	}
 
+	closed = true
 	return e.wr.Close()
 }
 
@@ -344,9 +385,6 @@ func (e *Encryptor) start() error {
 
 	e.started = true
 
-	debug("encrypt: chunksize %d\n\thdr-cksum: %x\n\taes-key: %x\n\tnonce: %x\n\thmac-key: %x\n\n",
-		e.ChunkSize, cksum, dkey, e.nonce, hmackey)
-
 	return nil
 }
 
@@ -402,9 +440,10 @@ type Decryptor struct {
 	buf   []byte
 	nonce []byte // nonce for the data decrypting cipher
 
-	hdrsum []byte // cached header checksum
-	auth   bool   // flag set to true if sender signed the key
-	eof    bool
+	hdrsum  []byte // cached header checksum
+	hdrHash []byte // cached H(ephemeral_PK || master_salt || root_key); populated once root_key is unwrapped
+	auth    bool   // flag set to true if sender signed the key
+	eof     bool
 }
 
 // NewDecryptor begins the decryption of recipient 'sk' using the public key of
@@ -418,7 +457,7 @@ func NewDecryptor(sk *PrivateKey, senderPk *PublicKey, rd io.Reader, wr io.Write
 		return nil, fmt.Errorf("decrypt: header: %w", err)
 	}
 
-	if bytes.Compare(b[:_MagicLen], []byte(_Magic)) != 0 {
+	if !bytes.Equal(b[:_MagicLen], []byte(_Magic)) {
 		return nil, ErrNotSigTool
 	}
 
@@ -480,26 +519,27 @@ func NewDecryptor(sk *PrivateKey, senderPk *PublicKey, rd io.Reader, wr io.Write
 	}
 
 	if len(d.Salt) != _SaltSize {
-		return nil, fmt.Errorf("decrypt: invalid nonce length %d", len(d.Salt))
+		return nil, fmt.Errorf("decrypt: invalid salt length %d", len(d.Salt))
 	}
 
 	if len(d.Keys) == 0 {
 		return nil, ErrNoWrappedKeys
 	}
 
-	// sanity check on the wrapped keys
+	// Iterate capsules. unwrapKey performs an exact length check against
+	// (_AesKeySize + Ed.SignatureSize + AEAD overhead); AEAD failure means
+	// "not this recipient's capsule" — move on.
 	for i, w := range d.Keys {
-		if len(w.DKey) <= _AesKeySize {
-			return nil, fmt.Errorf("decrypt: wrapped key %d: wrong-size encrypted key", i)
-		}
-
-		key, err := d.unwrapKey(w, sk)
+		key, sig, err := d.unwrapKey(w, sk)
 		if err != nil {
 			return nil, fmt.Errorf("decrypt: can't unwrap key %d: %w", i, err)
 		}
 
-		// We found a matching recipient key
 		if key != nil {
+			d.hdrHash = headerHash(d.Pk, d.Salt, key)
+			if err := d.verifyCapsule(sk, sig); err != nil {
+				return nil, fmt.Errorf("decrypt: capsule %d: %w", i, err)
+			}
 			return d.start(key)
 		}
 	}
@@ -516,9 +556,14 @@ func (d *Decryptor) AuthenticatedSender() bool {
 // Decrypt starts the decryption by reading from the reader and writing to the writer.
 func (d *Decryptor) Decrypt() error {
 
-	// error path - make sure we close the output file
-	// here, the retval matters less; the other error is more relevant.
-	defer d.wr.Close()
+	// Error path: ensure output file is closed. Cleared on the happy path
+	// so we don't double-close.
+	closed := false
+	defer func() {
+		if !closed {
+			d.wr.Close()
+		}
+	}()
 
 	if d.ae == nil {
 		return ErrNoKey
@@ -549,6 +594,7 @@ func (d *Decryptor) Decrypt() error {
 		return err
 	}
 
+	closed = true
 	return d.wr.Close()
 }
 
@@ -616,10 +662,6 @@ func (d *Decryptor) start(key []byte) (*Decryptor, error) {
 	// make sure we scrub this shared key
 	defer clear(key)
 
-	if err := d.verifySender(key, d.sender); err != nil {
-		return nil, fmt.Errorf("decrypt: verify sender: %w", err)
-	}
-
 	outbuf := make([]byte, _Sha3Size+_AesKeySize+_AEADNonceSize)
 	defer clear(outbuf)
 
@@ -648,9 +690,6 @@ func (d *Decryptor) start(key []byte) (*Decryptor, error) {
 	}
 
 	d.buf = make([]byte, int(d.ChunkSize)+d.ae.Overhead())
-
-	debug("decrypt: chunksize %d\n\thdr-cksum: %x\n\taes-key: %x\n\tnonce: %x\n\thmac-key: %x\n\n",
-		d.ChunkSize, d.hdrsum, dkey, d.nonce, hmackey)
 
 	return d, nil
 }
@@ -697,130 +736,48 @@ func (d *Decryptor) processTrailer(nblks uint32, sz uint64) error {
 	return nil
 }
 
-// optionally sign the checksum and encrypt everything
-func (e *Encryptor) addSenderSig(sk *PrivateKey) error {
-	var auth bool
-	var sig string
-
-	if e.sender != nil {
-		var csum [_Sha3Size256]byte
-		var err error
-
-		// We capture essential meta-data from the sender; viz:
-		//  - Sender tool version
-		//  - Sender generated curve25519 PK
-		//  - session salt, root key
-
-		h := sha3.New256()
-		h.Write([]byte(_Magic))
-		h.Write([]byte{_SigtoolVersion})
-		h.Write(e.Pk)
-		h.Write(e.Salt)
-		h.Write(e.key)
-		cksum := h.Sum(csum[:0])
-
-		if sig, err = e.sender.SignMessage(cksum); err != nil {
-			return fmt.Errorf("wrap: can't sign: %w", err)
-		}
-		auth = true
-	} else {
-		sig = nullSig() // empty signature
+// verifyCapsule checks the per-capsule signature on the wrapped key we just
+// unwrapped. If the signature is the all-zero sentinel, the file is
+// unauthenticated; otherwise the sender PK is required and must verify.
+func (d *Decryptor) verifyCapsule(sk *PrivateKey, sig []byte) error {
+	if len(sig) != Ed.SignatureSize {
+		return fmt.Errorf("decrypt: capsule sig: bad length %d", len(sig))
 	}
 
-	buf := make([]byte, _AesKeySize+_AEADNonceSize)
-	buf = expand(buf, e.key, e.Salt, []byte(_WrapSender))
+	var nullsig [Ed.SignatureSize]byte
 
-	defer clear(buf)
-
-	ekey, nonce := buf[:_AesKeySize], buf[_AesKeySize:]
-
-	aes, err := aes.NewCipher(ekey)
-	if err != nil {
-		return fmt.Errorf("senderId: %w", err)
+	// Unauthenticated sentinel: all-zero signature. Check BEFORE demanding
+	// sender PK — an unauthenticated file decrypts fine without one.
+	if subtle.ConstantTimeCompare(sig, nullsig[:]) == 1 {
+		d.auth = false
+		return nil
 	}
 
-	ae, err := cipher.NewGCM(aes)
-	if err != nil {
-		return fmt.Errorf("senderId: %w", err)
+	// Authenticated: sender PK is required.
+	if d.sender == nil {
+		return ErrNoSenderPK
 	}
 
-	outbuf := make([]byte, len(sig)+ae.Overhead())
-	buf = ae.Seal(outbuf[:0], nonce, []byte(sig), nil)
+	ch := capsuleHash(d.hdrHash, sk.pk.pk, d.sender.pk)
 
-	e.auth = auth
-	e.Sender = buf
-
-	return nil
-}
-
-// unwrap sender's signature using 'key' and extract the signature
-// Optionally, verify the signature using the sender's PK (if provided).
-func (d *Decryptor) verifySender(key []byte, senderPk *PublicKey) error {
-	outbuf := make([]byte, _AEADNonceSize+_AesKeySize)
-	buf := expand(outbuf, key, d.Salt, []byte(_WrapSender))
-
-	defer clear(outbuf)
-
-	ekey, nonce := buf[:_AesKeySize], buf[_AesKeySize:]
-
-	aes, err := aes.NewCipher(ekey)
-	if err != nil {
-		return fmt.Errorf("unwrap: %w", err)
+	if !d.sender.verifyRaw(ch, sig) {
+		return ErrBadSender
 	}
-
-	ae, err := cipher.NewGCM(aes)
-	if err != nil {
-		return fmt.Errorf("unwrap: %w", err)
-	}
-
-	sigbuf := make([]byte, sigLen())
-	sig, err := ae.Open(sigbuf[:0], nonce, d.Sender, nil)
-	if err != nil {
-		return fmt.Errorf("unwrap: can't open sender info: %w", err)
-	}
-
-	nullsig := nullSig()
-
-	// Did the sender actually sign anything?
-	if subtle.ConstantTimeCompare([]byte(nullsig), sig) == 0 {
-		if senderPk == nil {
-			return ErrNoSenderPK
-		}
-
-		var csum [_Sha3Size256]byte
-
-		h := sha3.New256()
-		h.Write([]byte(_Magic))
-		h.Write([]byte{_SigtoolVersion})
-		h.Write(d.Pk)
-		h.Write(d.Salt)
-		h.Write(key)
-		cksum := h.Sum(csum[:0])
-
-		ok, err := senderPk.VerifyMessage(cksum, string(sig))
-		if err != nil {
-			return fmt.Errorf("decrypt: verify sender: %w", err)
-		}
-
-		if !ok {
-			return fmt.Errorf("decrypt: verify sender: %w", ErrBadSender)
-		}
-
-		// we set this to indicate that the sender authenticated themselves;
-		d.auth = true
-	}
-
+	d.auth = true
 	return nil
 }
 
 // Wrap data encryption key 'k' with the sender's PK and our ephemeral curve SK
-// basically, we do a scalarmult: Ephemeral encryption/decryption SK x receiver PK
+// basically, we do a scalarmult: Ephemeral encryption/decryption SK x receiver PK.
+// Also signs a per-capsule Ed25519 signature binding (header_hash, recipient_pk,
+// sender_pk) so the recipient can authenticate the sender.
 func (e *Encryptor) wrapKey(pk *PublicKey) (*pb.WrappedKey, error) {
 	rxPK := pk.ToCurve25519()
 	sekrit, err := curve25519.X25519(e.encSK, rxPK)
 	if err != nil {
 		return nil, fmt.Errorf("wrap: %w", err)
 	}
+	defer clear(sekrit)
 
 	salt := randBuf(_RxNonceSize)
 
@@ -842,9 +799,29 @@ func (e *Encryptor) wrapKey(pk *PublicKey) (*pb.WrappedKey, error) {
 		return nil, fmt.Errorf("wrap: %w", err)
 	}
 
-	ekey := make([]byte, ae.Overhead()+len(e.key))
+	// Build the capsule plaintext: 32-byte root key || 64-byte capsule sig.
+	// Binding both inside one AEAD blob (rather than storing the sig in a
+	// separate plaintext field) keeps the wire format indistinguishable
+	// between authenticated and unauthenticated encrypts: an observer can
+	// not tell from the header whether the sender signed.
+	var pt [_AesKeySize + Ed.SignatureSize]byte
+	defer clear(pt[:])
+
+	copy(pt[:_AesKeySize], e.key)
+
+	if e.sender != nil {
+		ch := capsuleHash(e.hdrHash, pk.pk, e.sender.pk.pk)
+		sig, err := e.sender.signRaw(ch)
+		if err != nil {
+			return nil, fmt.Errorf("wrap: sign capsule: %w", err)
+		}
+		copy(pt[_AesKeySize:], sig)
+	}
+	// unauthenticated: pt[_AesKeySize:] stays zero — the null-sig sentinel
+
+	ekey := make([]byte, ae.Overhead()+len(pt))
 	w := &pb.WrappedKey{
-		DKey: ae.Seal(ekey[:0], nonce, e.key, pk.pk),
+		DKey: ae.Seal(ekey[:0], nonce, pt[:], pk.pk),
 		Salt: salt,
 	}
 
@@ -853,12 +830,13 @@ func (e *Encryptor) wrapKey(pk *PublicKey) (*pb.WrappedKey, error) {
 
 // Unwrap a wrapped key using the receivers Ed25519 secret key 'sk' and
 // senders ephemeral PublicKey
-func (d *Decryptor) unwrapKey(w *pb.WrappedKey, sk *PrivateKey) ([]byte, error) {
+func (d *Decryptor) unwrapKey(w *pb.WrappedKey, sk *PrivateKey) (key, sig []byte, err error) {
 	ourSK := sk.ToCurve25519()
 	sekrit, err := curve25519.X25519(ourSK, d.Pk)
 	if err != nil {
-		return nil, fmt.Errorf("unwrap: %w", err)
+		return nil, nil, fmt.Errorf("unwrap: %w", err)
 	}
+	defer clear(sekrit)
 
 	pk := sk.PublicKey()
 
@@ -871,29 +849,29 @@ func (d *Decryptor) unwrapKey(w *pb.WrappedKey, sk *PrivateKey) ([]byte, error) 
 
 	aes, err := aes.NewCipher(kek)
 	if err != nil {
-		return nil, fmt.Errorf("wrap: %w", err)
+		return nil, nil, fmt.Errorf("wrap: %w", err)
 	}
 
 	ae, err := cipher.NewGCM(aes)
 	if err != nil {
-		return nil, fmt.Errorf("wrap: %w", err)
+		return nil, nil, fmt.Errorf("wrap: %w", err)
 	}
 
-	want := _AesKeySize + ae.Overhead()
+	want := _AesKeySize + Ed.SignatureSize + ae.Overhead()
 	if len(w.DKey) != want {
-		return nil, fmt.Errorf("unwrap: incorrect decrypt bytes (need %d, saw %d)", want, len(w.DKey))
+		return nil, nil, fmt.Errorf("unwrap: incorrect decrypt bytes (need %d, saw %d)", want, len(w.DKey))
 	}
 
-	dkey := make([]byte, _AesKeySize) // decrypted data decryption key
-
-	dkey, err = ae.Open(dkey[:0], nonce, w.DKey, pk.pk)
+	pt := make([]byte, 0, _AesKeySize+Ed.SignatureSize)
+	pt, err = ae.Open(pt, nonce, w.DKey, pk.pk)
 	if err != nil {
-		// we indicate incorrect receiver SK by returning a nil key
-		return nil, nil
+		// not this recipient's capsule — signal with all-nil
+		return nil, nil, nil
 	}
 
-	// we have successfully found the correct recipient
-	return dkey, nil
+	key = pt[:_AesKeySize]
+	sig = pt[_AesKeySize:]
+	return key, sig, nil
 }
 
 // Write _all_ bytes of buffer 'buf'
@@ -943,7 +921,7 @@ func newSender() (sk, pk []byte, err error) {
 	return
 }
 
-// increment the nonce starting from MSB
+// increment the nonce as a big-endian counter (carry propagates from LSB)
 func incrNonce(nonce []byte) []byte {
 	for i := len(nonce) - 1; i >= 0; i-- {
 		nonce[i] += 1
@@ -952,27 +930,6 @@ func incrNonce(nonce []byte) []byte {
 		}
 	}
 	return nonce
-}
-
-var _debug int = 0
-
-// Enable debugging of this module;
-// level > 0 elicits debug messages on os.Stderr
-func Debug(level int) {
-	_debug = level
-}
-
-func debug(s string, v ...interface{}) {
-	if _debug <= 0 {
-		return
-	}
-
-	z := fmt.Sprintf(s, v...)
-	if n := len(z); z[n-1] != '\n' {
-		z += "\n"
-	}
-	os.Stderr.WriteString(z)
-	os.Stderr.Sync()
 }
 
 // EOF

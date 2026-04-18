@@ -14,7 +14,7 @@ message header {
     uint32 chunk_size  = 1; // encryption block size
     bytes  salt        = 2; // master salt (nonces are derived from this)
     bytes  pk          = 3; // ephemeral curve PK
-    bytes  sender      = 4; // sender signed artifacts
+    reserved 4;             // was: sender signed artifacts (v4 and earlier)
     repeated wrapped_key keys  = 5; // list of wrapped receiver blocks
 }
 
@@ -23,7 +23,7 @@ message header {
  * key. WrappedKey describes such a wrapped key.
  */
 message wrapped_key {
-    bytes d_key = 1;    // encrypted data key
+    bytes d_key = 1;    // AEAD-sealed (root_key || capsule_sig); sig is 64 zero bytes when unauthenticated
     bytes salt  = 2;    // nonce used for encryption
 }
 

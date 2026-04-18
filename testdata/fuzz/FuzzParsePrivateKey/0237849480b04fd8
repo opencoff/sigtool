@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("-----BEGIN SIGTOOL PRIVATE KEY-----\nkdf:sha3-argon2id:\n\n-----END SIGTOOL PRIVATE KEY-----")

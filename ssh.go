@@ -250,6 +250,9 @@ type opensshED25519 struct {
 }
 
 func parseOpenSSHPrivateKey(data []byte, getpw func() ([]byte, error)) (*PrivateKey, error) {
+	if len(data) < len(opensshv1Magic)+1 {
+		return nil, ErrBadFormat
+	}
 	magic := append([]byte(opensshv1Magic), 0)
 	if !bytes.Equal(magic, data[0:len(magic)]) {
 		return nil, ErrBadFormat
@@ -283,6 +286,9 @@ func parseOpenSSHPrivateKey(data []byte, getpw func() ([]byte, error)) (*Private
 
 		cbc := cipher.NewCBCDecrypter(block, iv)
 		privateKeyBytes = []byte(w.PrivKeyBlock)
+		if n := len(privateKeyBytes); n == 0 || n%aes.BlockSize != 0 {
+			return nil, ErrBadCiphertextLen
+		}
 		cbc.CryptBlocks(privateKeyBytes, privateKeyBytes)
 
 		encrypted = true
