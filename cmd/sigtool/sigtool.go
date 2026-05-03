@@ -25,7 +25,7 @@ import (
 	flag "github.com/opencoff/pflag"
 )
 
-var Z string = path.Base(os.Args[0])
+var Z = path.Base(os.Args[0])
 
 func main() {
 	var ver, help bool
@@ -34,7 +34,9 @@ func main() {
 	mf.SetInterspersed(false)
 	mf.BoolVarP(&ver, "version", "v", false, "Show version info and exit")
 	mf.BoolVarP(&help, "help", "h", false, "Show help info exit")
-	mf.Parse(os.Args[1:])
+	if err := mf.Parse(os.Args[1:]); err != nil {
+		Die("flag parse: %s", err)
+	}
 
 	if ver {
 		fmt.Printf("%s - %s [%s]\n", Z, ProductVersion, RepoVersion)
@@ -160,7 +162,7 @@ func maybeGetPw(nopw bool, envpw string, repeat bool) func() ([]byte, error) {
 }
 
 // This will be filled in by "build"
-var RepoVersion string = "UNDEFINED"
-var ProductVersion string = "UNDEFINED"
+var RepoVersion = "UNDEFINED"
+var ProductVersion = "UNDEFINED"
 
 // vim: ft=go:sw=8:ts=8:noexpandtab:tw=98:

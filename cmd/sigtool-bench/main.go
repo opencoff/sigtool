@@ -85,7 +85,9 @@ func main() {
 	fs.StringVar(&cpuProfile, "cpuprofile", "", "Write CPU profile to `file`")
 	fs.StringVar(&memProfile, "memprofile", "", "Write memory profile to `file`")
 
-	fs.Parse(os.Args[1:])
+	if err := fs.Parse(os.Args[1:]); err != nil {
+		Die("flag parse: %s", err)
+	}
 
 	if help {
 		usage(fs)
@@ -109,7 +111,9 @@ func main() {
 		if err != nil {
 			Die("cpuprofile: %s", err)
 		}
-		pprof.StartCPUProfile(f)
+		if err := pprof.StartCPUProfile(f); err != nil {
+			Die("cpuprofile start: %s", err)
+		}
 		defer pprof.StopCPUProfile()
 	}
 
@@ -361,8 +365,12 @@ func main() {
 			Die("memprofile: %s", err)
 		}
 		runtime.GC()
-		pprof.WriteHeapProfile(f)
-		f.Close()
+		if err := pprof.WriteHeapProfile(f); err != nil {
+			Warn("memprofile write: %s", err)
+		}
+		if err := f.Close(); err != nil {
+			Warn("memprofile close: %s", err)
+		}
 	}
 
 	// Output results
@@ -430,7 +438,7 @@ func chunkSizeFor(fileSize uint64) uint64 {
 	case fileSize == 0:
 		return 128 * 1024 // 128KB default
 	case fileSize <= 64*1024: // <= 64KB
-		return uint64(fileSize)
+		return fileSize
 	case fileSize <= 1024*1024: // <= 1MB
 		return 128 * 1024 // 128KB
 	case fileSize <= 16*1024*1024: // <= 16MB
@@ -476,7 +484,7 @@ func createBenchFile(dir string, size uint64) string {
 		}
 		remaining -= want
 	}
-	fd.Sync()
+	_ = fd.Sync()
 	return fn
 }
 

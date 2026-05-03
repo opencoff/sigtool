@@ -82,7 +82,7 @@ func createTempFile(b *testing.B, size int) string {
 		}
 		remaining -= n
 	}
-	fd.Sync()
+	_ = fd.Sync()
 
 	return fn
 }

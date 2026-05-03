@@ -127,7 +127,7 @@ func decrypt(args []string) {
 	}
 
 	if pk == nil && d.AuthenticatedSender() {
-		var fn string = infile
+		var fn = infile
 		if len(fn) == 0 || fn == "-" {
 			fn = "<stdin>"
 		}
@@ -138,7 +138,9 @@ func decrypt(args []string) {
 		Die("%s", err)
 	}
 
-	outfd.Close()
+	if err := outfd.Close(); err != nil {
+		Die("can't finalize output: %s", err)
+	}
 
 	if test {
 		Warn("Enc file OK")

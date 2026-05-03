@@ -62,7 +62,7 @@ func (bi *BuildInfo) String() string {
 			cgo = s.Value == "true"
 
 		default:
-			//fmt.Fprintf(&sb, "# %s: %s\n", s.Key, s.Value)
+			// fmt.Fprintf(&sb, "# %s: %s\n", s.Key, s.Value)
 		}
 	}
 	fmt.Fprintf(&sb, "GO: %s-%s", os, arch)

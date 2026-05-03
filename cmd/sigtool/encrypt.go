@@ -33,7 +33,7 @@ func encrypt(args []string) {
 
 	var outfile string
 	var keyfile string
-	var szstr string = "128k"
+	var szstr = "128k"
 	var envpw string
 	var nopw, force bool
 	var blksize uint64
@@ -103,6 +103,9 @@ func encrypt(args []string) {
 	}
 
 	pka, err := sigtool.ParseAuthorizedKeys(authdata)
+	if err != nil {
+		Warn("can't parse %s: %s", authkeys, err)
+	}
 	keymap := make(map[string]*sigtool.PublicKey)
 
 	for _, pk := range pka {
@@ -147,14 +150,14 @@ func encrypt(args []string) {
 			pk, ok = keymap[fn]
 			if !ok {
 				Warn("can't find user %s in %s", fn, authkeys)
-				errs += 1
+				errs++
 				continue
 			}
 		} else {
 			pk, err = sigtool.ReadPublicKey(fn)
 			if err != nil {
 				Warn("%s", err)
-				errs += 1
+				errs++
 				continue
 			}
 		}
@@ -175,7 +178,7 @@ func encrypt(args []string) {
 		err = en.AddRecipient(rxpk[i])
 		if err != nil {
 			Warn("%s", err)
-			errs += 1
+			errs++
 		}
 	}
 
@@ -187,7 +190,9 @@ func encrypt(args []string) {
 	if err != nil {
 		Die("%s", err)
 	}
-	outfd.Close()
+	if err := outfd.Close(); err != nil {
+		Die("can't finalize output: %s", err)
+	}
 }
 
 func encryptUsage(fs *flag.FlagSet) {

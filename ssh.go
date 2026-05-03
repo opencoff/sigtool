@@ -21,7 +21,6 @@ import (
 	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
-	"crypto/x509"
 	"encoding/base64"
 	"encoding/binary"
 	"encoding/pem"
@@ -44,8 +43,13 @@ func parseSSHPrivateKey(data []byte, getpw func() ([]byte, error)) (*PrivateKey,
 		return nil, ErrNoPEMFound
 	}
 
-	if x509.IsEncryptedPEMBlock(block) {
-		return nil, fmt.Errorf("ssh: no support for legacy PEM encrypted keys")
+	// Refuse legacy RFC 1423 PEM-encrypted keys. Detection mirrors the
+	// retired x509.IsEncryptedPEMBlock (presence of a DEK-Info header) and
+	// avoids the deprecation warning. Modern OpenSSH keys carry their own
+	// authenticated encryption inside the OPENSSH PRIVATE KEY block and are
+	// handled by parseOpenSSHPrivateKey below.
+	if _, ok := block.Headers["DEK-Info"]; ok {
+		return nil, fmt.Errorf("ssh: encrypted PEM-format SSH keys are not supported; use modern OpenSSH key format or decrypt your key first")
 	}
 
 	switch block.Type {
@@ -57,7 +61,7 @@ func parseSSHPrivateKey(data []byte, getpw func() ([]byte, error)) (*PrivateKey,
 }
 
 func parseSSHPublicKey(in []byte) (*PublicKey, error) {
-	splitter := regexp.MustCompile("[ \\t]+")
+	splitter := regexp.MustCompile(`[ \t]+`)
 	v := splitter.Split(string(in), -1)
 	if len(v) != 3 {
 		return nil, ErrBadPublicKey
@@ -175,19 +179,12 @@ func ParseAuthorizedKeys(in []byte) ([]*PublicKey, error) {
 		}
 
 		// No key type recognised. Maybe there's an options field at
-		// the beginning.
+		// the beginning. Walk forward to find the first non-quoted
+		// whitespace; the key body starts after that.
 		var b byte
 		inQuote := false
-		var candidateOptions []string
-		optionStart := 0
 		for i, b = range in {
 			isEnd := !inQuote && (b == ' ' || b == '\t')
-			if (b == ',' && !inQuote) || isEnd {
-				if i-optionStart > 0 {
-					candidateOptions = append(candidateOptions, string(in[optionStart:i]))
-				}
-				optionStart = i + 1
-			}
 			if isEnd {
 				break
 			}

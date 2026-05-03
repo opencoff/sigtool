@@ -36,7 +36,9 @@ func signify(args []string) {
 	fs.StringVarP(&output, "output", "o", "", "Write signature to file `F`")
 	fs.BoolVarP(&force, "overwrite", "", false, "Overwrite previous signature file if it exists")
 
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		Die("flag parse: %s", err)
+	}
 
 	if help {
 		fs.SetOutput(os.Stdout)
@@ -59,7 +61,7 @@ Options:
 	fn := args[1]
 
 	var err error
-	var outf string = "-"
+	var outf = "-"
 	var fd io.WriteCloser = os.Stdout
 
 	if len(output) > 0 {
@@ -104,5 +106,7 @@ Options:
 	if err = writeAll(fd, []byte(sig)); err != nil {
 		Die("%s: %s", fn, err)
 	}
-	fd.Close()
+	if err := fd.Close(); err != nil {
+		Die("%s: %s", fn, err)
+	}
 }

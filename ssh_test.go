@@ -116,11 +116,13 @@ func TestSSHPublicKeyErrors(t *testing.T) {
 	_, err = parseSSHPublicKey([]byte("ssh-ed25519 !!!invalid-base64!!! comment"))
 	assert(err != nil, "invalid base64 should error")
 
-	// Non-Ed25519 key type (RSA) - should return nil, not error
+	// Non-Ed25519 key type (RSA): parseSSHPublicKey silently skips the
+	// algo at the SSH wire-format check (see parseEncPubKey) and returns
+	// (nil, nil). Lock that contract here.
 	rsakey := "ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAABgQC7 rsa-comment"
 	pk, err := parseSSHPublicKey([]byte(rsakey))
+	assert(err == nil, "non-ed25519 key returned err: %s", err)
 	assert(pk == nil, "RSA key should return nil pk")
-	// Note: parseSSHPublicKey returns nil for non-Ed25519, not an error
 }
 
 func TestParseAuthorizedKeys(t *testing.T) {

@@ -28,7 +28,9 @@ func verify(args []string) {
 	fs.BoolVarP(&help, "help", "h", false, "Show this help and exit")
 	fs.BoolVarP(&quiet, "quiet", "q", false, "Don't show any output; exit with status code only")
 
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		Die("flag parse: %s", err)
+	}
 
 	if help {
 		fs.SetOutput(os.Stdout)

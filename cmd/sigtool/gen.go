@@ -36,7 +36,9 @@ func gen(args []string) {
 	fs.StringVarP(&envpw, "env-password", "E", "", "Use passphrase from environment variable `E`")
 	fs.BoolVarP(&force, "overwrite", "", false, "Overwrite the output file if it exists")
 
-	fs.Parse(args)
+	if err := fs.Parse(args); err != nil {
+		Die("flag parse: %s", err)
+	}
 
 	if help {
 		fs.SetOutput(os.Stdout)
@@ -108,5 +110,7 @@ func writeFile(fn string, buf []byte, force bool, perm os.FileMode) {
 		Die("%s: %s", fn, err)
 	}
 
-	sf.Close()
+	if err := sf.Close(); err != nil {
+		Die("%s: can't commit: %s", fn, err)
+	}
 }

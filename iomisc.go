@@ -25,7 +25,7 @@ import (
 func fileCksum(fn string, f func() hash.Hash) ([]byte, error) {
 	fd, err := os.Open(fn)
 	if err != nil {
-		return nil, fmt.Errorf("can't open %s: %s", fn, err)
+		return nil, fmt.Errorf("can't open %s: %w", fn, err)
 	}
 
 	defer fd.Close()
@@ -45,5 +45,5 @@ func fileCksum(fn string, f func() hash.Hash) ([]byte, error) {
 
 	h.Write(b[:])
 
-	return h.Sum(nil)[:], nil
+	return h.Sum(nil), nil
 }

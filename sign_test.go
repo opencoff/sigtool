@@ -17,26 +17,8 @@ import (
 	"crypto/sha512"
 	"fmt"
 	"os"
-	"path"
 	"testing"
 )
-
-// Return a temp dir in a temp-dir
-func tempdir(t *testing.T) string {
-	assert := newAsserter(t)
-
-	var b [10]byte
-
-	dn := os.TempDir()
-	randRead(b[:])
-
-	tmp := path.Join(dn, fmt.Sprintf("%x", b[:]))
-	err := os.MkdirAll(tmp, 0755)
-	assert(err == nil, fmt.Sprintf("mkdir -p %s: %s", tmp, err))
-
-	//t.Logf("Tempdir is %s", tmp)
-	return tmp
-}
 
 func TestSignRandBuf(t *testing.T) {
 	assert := newAsserter(t)
@@ -89,8 +71,8 @@ func TestSignRandBuf(t *testing.T) {
 		assert(n == want, fmt.Sprintf("file.dat i/o fail: exp %d saw %v", want, n))
 		sz -= n
 	}
-	fd.Sync()
-	fd.Close()
+	_ = fd.Sync()
+	_ = fd.Close()
 
 	sig, err = sk.SignFile(zf)
 	assert(err == nil, "file.dat sign fail: %s", err)
@@ -107,7 +89,7 @@ func TestSignRandBuf(t *testing.T) {
 	n := st.Size()
 	assert(n == filesz, "file.dat size fail; exp %d, saw %d", filesz, n)
 
-	os.Truncate(zf, n-1)
+	_ = os.Truncate(zf, n-1)
 
 	st, err = os.Stat(zf)
 	assert(err == nil, "file.dat stat2 fail: %s", err)
@@ -163,7 +145,7 @@ func benchSign(b *testing.B, buf []byte, sk *PrivateKey) (sig string) {
 
 func benchVerify(b *testing.B, buf []byte, sig string, pk *PublicKey) {
 	for i := 0; i < b.N; i++ {
-		pk.VerifyMessage(buf, sig)
+		_, _ = pk.VerifyMessage(buf, sig)
 	}
 }
 
@@ -187,7 +169,7 @@ func Benchmark_SignMessage(b *testing.B) {
 			b.SetBytes(int64(tc.size))
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				sk.SignMessage(buf)
+				_, _ = sk.SignMessage(buf)
 			}
 		})
 
@@ -198,7 +180,7 @@ func Benchmark_SignMessage(b *testing.B) {
 			b.SetBytes(int64(tc.size))
 			b.ResetTimer()
 			for i := 0; i < b.N; i++ {
-				pk.VerifyMessage(buf, sig)
+				_, _ = pk.VerifyMessage(buf, sig)
 			}
 		})
 	}
@@ -221,7 +203,7 @@ func Benchmark_SignFile(b *testing.B) {
 			b.StartTimer()
 
 			for i := 0; i < b.N; i++ {
-				sk.SignFile(fn)
+				_, _ = sk.SignFile(fn)
 			}
 		})
 
@@ -240,7 +222,7 @@ func Benchmark_SignFile(b *testing.B) {
 			b.StartTimer()
 
 			for i := 0; i < b.N; i++ {
-				pk.VerifyFile(fn, sig)
+				_, _ = pk.VerifyFile(fn, sig)
 			}
 		})
 	}

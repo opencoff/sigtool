@@ -41,7 +41,7 @@ func newBuffer2(nm string, buf []byte) *Buffer {
 }
 
 func (b *Buffer) Write(z []byte) (int, error) {
-	//fmt.Printf("   buf %s: W %d\n", b.nm, len(z))
+	// fmt.Printf("   buf %s: W %d\n", b.nm, len(z))
 	return b.Buffer.Write(z)
 }
 
@@ -96,8 +96,8 @@ func TestEncryptSimple(t *testing.T) {
 
 	pk := sk.PublicKey()
 
-	var blkSize int = 512
-	var size int = (blkSize * 10)
+	var blkSize = 512
+	var size = (blkSize * 10)
 
 	// cleartext
 	buf := make([]byte, size)
@@ -140,8 +140,8 @@ func TestEncryptSmallSizes(t *testing.T) {
 	assert(err == nil, "RX SK gen failed: %s", err)
 	pk := rx.PublicKey()
 
-	var blkSize int = 8
-	var size int = (blkSize * 4)
+	var blkSize = 8
+	var size = (blkSize * 4)
 
 	// cleartext
 	bigbuf := make([]byte, size)
@@ -189,8 +189,8 @@ func TestEncryptCorrupted(t *testing.T) {
 
 	pk := sk.PublicKey()
 
-	var blkSize int = 1024
-	var size int = (blkSize * 23) + randmod(blkSize)
+	var blkSize = 1024
+	var size = (blkSize * 23) + randmod(blkSize)
 
 	// cleartext
 	buf := make([]byte, size)
@@ -235,8 +235,8 @@ func TestEncryptSenderVerified(t *testing.T) {
 
 	rxpk := receiver.PublicKey()
 
-	var blkSize int = 1024
-	var size int = (blkSize * 23) + randmod(blkSize)
+	var blkSize = 1024
+	var size = (blkSize * 23) + randmod(blkSize)
 
 	// cleartext
 	buf := make([]byte, size)
@@ -262,8 +262,10 @@ func TestEncryptSenderVerified(t *testing.T) {
 	assert(err == nil, "rand SK gen failed: %s", err)
 
 	// first set wrong keys
-	dd, err := NewDecryptor(randkey, rxpk, badrd, wr)
+	_, err = NewDecryptor(randkey, rxpk, badrd, wr)
 	assert(err != nil, "decryptor bad key worked")
+
+	var dd *Decryptor
 
 	wr = newBuffer("wr3")
 	dd, err = NewDecryptor(receiver, sender.PublicKey(), rd, wr)
@@ -286,8 +288,8 @@ func TestEncryptMultiReceiver(t *testing.T) {
 	sender, err := NewPrivateKey(t.Name())
 	assert(err == nil, "sender SK gen failed: %s", err)
 
-	var blkSize int = 1024
-	var size int = (blkSize * 23) + randmod(blkSize)
+	var blkSize = 1024
+	var size = (blkSize * 23) + randmod(blkSize)
 
 	// cleartext
 	buf := make([]byte, size)

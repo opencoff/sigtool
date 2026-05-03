@@ -29,7 +29,7 @@ import (
 	Ed "crypto/ed25519"
 )
 
-const _Sigtool_sign_prefix = "sigtool signed message"
+const _SigtoolSignPrefix = "sigtool signed message"
 
 // Sigtool signatures are always of the form
 //   fingerprint.signature
@@ -41,15 +41,15 @@ func (sk *PrivateKey) SignMessage(msg []byte) (string, error) {
 	var hb [sha512.Size]byte
 
 	h := sha512.New()
-	h.Write([]byte(_Sigtool_sign_prefix))
+	h.Write([]byte(_SigtoolSignPrefix))
 	h.Write(msg)
-	ck := h.Sum(hb[:0])[:]
+	ck := h.Sum(hb[:0])
 
 	x := Ed.PrivateKey(sk.sk)
 
 	sig, err := x.Sign(rand.Reader, ck, crypto.Hash(0))
 	if err != nil {
-		return "", fmt.Errorf("can't sign %x: %s", ck, err)
+		return "", fmt.Errorf("can't sign %x: %w", ck, err)
 	}
 
 	ss := tob64(sig)
@@ -114,9 +114,9 @@ func (pk *PublicKey) verifySig(msg, sig []byte) bool {
 	var hb [sha512.Size]byte
 
 	h := sha512.New()
-	h.Write([]byte(_Sigtool_sign_prefix))
+	h.Write([]byte(_SigtoolSignPrefix))
 	h.Write(msg)
-	ck := h.Sum(hb[:0])[:]
+	ck := h.Sum(hb[:0])
 
 	x := Ed.PublicKey(pk.pk)
 	return Ed.Verify(x, ck, sig)

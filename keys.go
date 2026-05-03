@@ -69,17 +69,17 @@ const (
 	_FpSize = 16 // Length of Ed25519 Public Key Hash
 
 	// Algorithm used in the encrypted private key
-	_Sk_algo = "sha3-argon2id"
+	_SkAlgo = "sha3-argon2id"
 
 	// PEM Block header
-	_Sigtool_SK = "SIGTOOL PRIVATE KEY"
-	_Sigtool_PK = "SIGTOOL PUBLIC KEY"
+	_SigtoolSK = "SIGTOOL PRIVATE KEY"
+	_SigtoolPK = "SIGTOOL PUBLIC KEY"
 
 	// These are comforable margins exceeding
 	// NIST 2024 guidelines
-	_Argon2id_mem  uint32 = 64 * 1024
-	_Argon2id_time uint32 = 2
-	_Argon2id_proc uint32 = 8
+	_Argon2idMem  uint32 = 64 * 1024
+	_Argon2idTime uint32 = 2
+	_Argon2idProc uint32 = 8
 )
 
 // given a public key, generate a deterministic short-hash of it.
@@ -121,7 +121,7 @@ func ParsePrivateKey(b []byte, getpw func() ([]byte, error)) (*PrivateKey, error
 		return parseSSHPrivateKey(b, getpw)
 	}
 
-	if blk.Type != _Sigtool_SK {
+	if blk.Type != _SigtoolSK {
 		return nil, fmt.Errorf("sigtool: PrivateKey: Not sigtool")
 	}
 
@@ -242,7 +242,7 @@ func (sk *PrivateKey) Marshal(getpw func() ([]byte, error)) ([]byte, error) {
 
 	// Put this in a PEM Block
 	blk := &pem.Block{
-		Type: _Sigtool_SK,
+		Type: _SigtoolSK,
 		Headers: map[string]string{
 			"comment":     sk.Comment,
 			"fingerprint": sk.pk.Fingerprint(),
@@ -336,7 +336,7 @@ func ParsePublicKey(b []byte) (*PublicKey, error) {
 		return nil, fmt.Errorf("sigtool: PublicKey: No PEM")
 	}
 
-	if blk.Type != _Sigtool_PK {
+	if blk.Type != _SigtoolPK {
 		return nil, fmt.Errorf("sigtool: PublicKey: Not sigtool")
 	}
 
@@ -402,7 +402,7 @@ func (pk *PublicKey) Marshal() ([]byte, error) {
 	}
 
 	blk := &pem.Block{
-		Type: _Sigtool_PK,
+		Type: _SigtoolPK,
 		Headers: map[string]string{
 			"comment":     pk.Comment,
 			"fingerprint": pk.Fingerprint(),
@@ -506,22 +506,22 @@ func ed25519PKToCurve(pk []byte) []byte {
 }
 
 func argonKDF(n int, secret, salt []byte) []byte {
-	return argon2.IDKey(secret, salt, _Argon2id_time,
-		_Argon2id_mem, uint8(0xff&_Argon2id_proc), uint32(n))
+	return argon2.IDKey(secret, salt, _Argon2idTime,
+		_Argon2idMem, uint8(0xff&_Argon2idProc), uint32(n))
 }
 
 // bounds for attacker-supplied Argon2id parameters when parsing a sigtool
 // PEM. These gates exist because the stdlib argon2 package panics on Time=0,
 // truncates Proc silently, and will happily allocate terabytes for large Mem.
 const (
-	_Argon_minTime uint32 = 1
-	_Argon_maxTime uint32 = 1024
-	_Argon_minMem  uint32 = 8       // argon2 requires >= 8 KiB per lane
-	_Argon_maxMem  uint32 = 1 << 20 // 1 GiB — ours is 64 MiB
-	_Argon_minProc uint32 = 1
-	_Argon_maxProc uint32 = 255 // must fit in uint8
-	_Argon_minSalt int    = 8   // argon2 spec minimum
-	_Argon_maxSalt int    = 128
+	_ArgonMinTime uint32 = 1
+	_ArgonMaxTime uint32 = 1024
+	_ArgonMinMem  uint32 = 8       // argon2 requires >= 8 KiB per lane
+	_ArgonMaxMem  uint32 = 1 << 20 // 1 GiB — ours is 64 MiB
+	_ArgonMinProc uint32 = 1
+	_ArgonMaxProc uint32 = 255 // must fit in uint8
+	_ArgonMinSalt int    = 8   // argon2 spec minimum
+	_ArgonMaxSalt int    = 128
 )
 
 // validateArgonParams range-checks attacker-controlled Argon2id parameters
@@ -530,16 +530,16 @@ func validateArgonParams(a *pb.Argon) error {
 	if a == nil {
 		return ErrBadKDFParams
 	}
-	if a.Time < _Argon_minTime || a.Time > _Argon_maxTime {
+	if a.Time < _ArgonMinTime || a.Time > _ArgonMaxTime {
 		return ErrBadKDFParams
 	}
-	if a.Mem < _Argon_minMem || a.Mem > _Argon_maxMem {
+	if a.Mem < _ArgonMinMem || a.Mem > _ArgonMaxMem {
 		return ErrBadKDFParams
 	}
-	if a.Proc < _Argon_minProc || a.Proc > _Argon_maxProc {
+	if a.Proc < _ArgonMinProc || a.Proc > _ArgonMaxProc {
 		return ErrBadKDFParams
 	}
-	if n := len(a.Salt); n < _Argon_minSalt || n > _Argon_maxSalt {
+	if n := len(a.Salt); n < _ArgonMinSalt || n > _ArgonMaxSalt {
 		return ErrBadKDFParams
 	}
 	return nil
@@ -547,9 +547,9 @@ func validateArgonParams(a *pb.Argon) error {
 
 func encodeKDF(salt []byte) (string, error) {
 	a := &pb.Argon{
-		Mem:  _Argon2id_mem,
-		Time: _Argon2id_time,
-		Proc: _Argon2id_proc,
+		Mem:  _Argon2idMem,
+		Time: _Argon2idTime,
+		Proc: _Argon2idProc,
 		Salt: salt,
 	}
 
@@ -558,7 +558,7 @@ func encodeKDF(salt []byte) (string, error) {
 		return "", fmt.Errorf("kdf: marshal: %w", err)
 	}
 
-	s := fmt.Sprintf("%s:%s", _Sk_algo, tob64(b))
+	s := fmt.Sprintf("%s:%s", _SkAlgo, tob64(b))
 	return s, nil
 }
 
@@ -569,7 +569,7 @@ func parseKDF(s string) (string, *pb.Argon, error) {
 	}
 	algo, s := s[:i], s[i+1:]
 
-	if algo != _Sk_algo {
+	if algo != _SkAlgo {
 		return "", nil, fmt.Errorf("kdf: %s: unsupported algorithm", algo)
 	}
 

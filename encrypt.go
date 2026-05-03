@@ -74,6 +74,7 @@ import (
 	"crypto/hmac"
 	"crypto/sha3"
 	"crypto/subtle"
+	"errors"
 	"fmt"
 	"golang.org/x/crypto/curve25519"
 	"golang.org/x/crypto/hkdf"
@@ -193,9 +194,9 @@ func NewEncryptor(sk *PrivateKey, rx *PublicKey, rd io.Reader, wr io.WriteCloser
 func headerHash(ephPk, salt, key []byte) []byte {
 	var out [_Sha3Size]byte
 	h := sha3.New512()
-	h.Write(ephPk)
-	h.Write(salt)
-	h.Write(key)
+	_, _ = h.Write(ephPk)
+	_, _ = h.Write(salt)
+	_, _ = h.Write(key)
 	return h.Sum(out[:0])
 }
 
@@ -204,9 +205,9 @@ func headerHash(ephPk, salt, key []byte) []byte {
 func capsuleHash(hdrHash, recipientPk, senderPk []byte) []byte {
 	var out [_Sha3Size]byte
 	h := sha3.New512()
-	h.Write(hdrHash)
-	h.Write(recipientPk)
-	h.Write(senderPk)
+	_, _ = h.Write(hdrHash)
+	_, _ = h.Write(recipientPk)
+	_, _ = h.Write(senderPk)
 	return h.Sum(out[:0])
 }
 
@@ -251,8 +252,10 @@ func (e *Encryptor) Encrypt() error {
 	for !eof {
 		n, err := io.ReadAtLeast(e.rd, buf, int(e.ChunkSize))
 		if err != nil {
-			switch err {
-			case io.EOF, io.ErrClosedPipe, io.ErrUnexpectedEOF:
+			switch {
+			case errors.Is(err, io.EOF),
+				errors.Is(err, io.ErrClosedPipe),
+				errors.Is(err, io.ErrUnexpectedEOF):
 				eof = true
 			default:
 				return fmt.Errorf("encrypt: I/O read error: %w", err)
@@ -325,7 +328,7 @@ func (e *Encryptor) start() error {
 	defer clear(buffer)
 
 	// Now assemble the fixed header
-	copy(fixHdr[:], []byte(_Magic))
+	copy(fixHdr, []byte(_Magic))
 	fixHdr[_MagicLen] = _SigtoolVersion
 	enc32(fixHdr[_MagicLen+1:], uint32(varSize))
 
@@ -336,7 +339,7 @@ func (e *Encryptor) start() error {
 	}
 
 	h := sha3.New512()
-	h.Write(buffer[:_FixedHdrLen+varSize])
+	_, _ = h.Write(buffer[:_FixedHdrLen+varSize])
 	cksum := h.Sum(sumHdr[:0])
 
 	// now make the data encryption keys, nonces etc.
@@ -493,8 +496,8 @@ func NewDecryptor(sk *PrivateKey, senderPk *PublicKey, rd io.Reader, wr io.Write
 	var csum [_Sha3Size]byte
 
 	h := sha3.New512()
-	h.Write(b[:])
-	h.Write(varBuf[:varSize])
+	_, _ = h.Write(b[:])
+	_, _ = h.Write(varBuf[:varSize])
 	cksum := h.Sum(csum[:0])
 
 	if subtle.ConstantTimeCompare(verify, cksum) == 0 {
@@ -602,8 +605,7 @@ func (d *Decryptor) Decrypt() error {
 func (d *Decryptor) decrypt(i uint32) (bool, int, error) {
 	var ad [8]byte
 
-	n, err := io.ReadFull(d.rd, ad[:4])
-	if err != nil {
+	if _, err := io.ReadFull(d.rd, ad[:4]); err != nil {
 		return false, 0, fmt.Errorf("decrypt: read chunk %d: %w", i, err)
 	}
 
@@ -628,7 +630,7 @@ func (d *Decryptor) decrypt(i uint32) (bool, int, error) {
 	}
 
 	ovh := d.ae.Overhead()
-	n, err = io.ReadFull(d.rd, d.buf[:int(ptlen)+ovh])
+	n, err := io.ReadFull(d.rd, d.buf[:int(ptlen)+ovh])
 	if err != nil {
 		return false, 0, fmt.Errorf("decrypt: read chunk %d: %w", i, err)
 	}
@@ -785,7 +787,7 @@ func (e *Encryptor) wrapKey(pk *PublicKey) (*pb.WrappedKey, error) {
 	defer clear(out)
 
 	// We entangle the sender & receiver PKs when we expand the shared secret
-	buf := expand(out[:], sekrit, salt, pk.pk, e.Pk, []byte(_WrapReceiver))
+	buf := expand(out, sekrit, salt, pk.pk, e.Pk, []byte(_WrapReceiver))
 
 	kek, nonce := buf[:_AesKeySize], buf[_AesKeySize:]
 
@@ -843,7 +845,7 @@ func (d *Decryptor) unwrapKey(w *pb.WrappedKey, sk *PrivateKey) (key, sig []byte
 	out := make([]byte, _AesKeySize+_RxNonceSize)
 	defer clear(out)
 
-	buf := expand(out[:], sekrit, w.Salt, pk.pk, d.Pk, []byte(_WrapReceiver))
+	buf := expand(out, sekrit, w.Salt, pk.pk, d.Pk, []byte(_WrapReceiver))
 
 	kek, nonce := buf[:_AesKeySize], buf[_AesKeySize:]
 
@@ -896,7 +898,7 @@ func expand(out []byte, shared, salt []byte, ad ...[]byte) []byte {
 
 	s := sha3.New512()
 	for i := range ad {
-		s.Write(ad[i])
+		_, _ = s.Write(ad[i])
 	}
 
 	s.Sum(z[:0])
@@ -922,14 +924,13 @@ func newSender() (sk, pk []byte, err error) {
 }
 
 // increment the nonce as a big-endian counter (carry propagates from LSB)
-func incrNonce(nonce []byte) []byte {
+func incrNonce(nonce []byte) {
 	for i := len(nonce) - 1; i >= 0; i-- {
-		nonce[i] += 1
+		nonce[i]++
 		if nonce[i] != 0 {
 			break
 		}
 	}
-	return nonce
 }
 
 // EOF

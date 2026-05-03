@@ -1,0 +1,49 @@
+version: "2"
+linters:
+  enable:
+    - bodyclose
+    - errorlint
+    - rowserrcheck
+    - sqlclosecheck
+    - nilerr
+    - noctx
+    - contextcheck
+    - misspell
+    - unconvert
+    - unparam
+    - prealloc
+    - gocritic
+    - revive
+    - gosec
+
+  settings:
+    gosec:
+      excludes:
+        - G115 # integer overflow — bounds enforced by upstream invariants in crypto/IO paths
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    rules:
+      - linters:
+          - errcheck
+          - govet
+          - ineffassign
+          - staticcheck
+          - unused
+        path: \.pb\.go$
+    paths:
+      - internal/pb
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

@@ -22,7 +22,6 @@ import (
 
 var goodPw = []byte("abc")
 var badPw = []byte("def")
-var nilPw []byte
 
 // return a hardcoded password
 func fixedPw() ([]byte, error) {
@@ -31,9 +30,6 @@ func fixedPw() ([]byte, error) {
 
 func wrongPw() ([]byte, error) {
 	return badPw, nil
-}
-func emptyPw() ([]byte, error) {
-	return nilPw, nil
 }
 
 func TestKeysMarshal(t *testing.T) {
@@ -77,9 +73,9 @@ func TestValidateArgonParams(t *testing.T) {
 
 	good := func() *pb.Argon {
 		return &pb.Argon{
-			Time: _Argon2id_time,
-			Mem:  _Argon2id_mem,
-			Proc: _Argon2id_proc,
+			Time: _Argon2idTime,
+			Mem:  _Argon2idMem,
+			Proc: _Argon2idProc,
 			Salt: make([]byte, 32),
 		}
 	}
@@ -95,14 +91,14 @@ func TestValidateArgonParams(t *testing.T) {
 		mutate func(a *pb.Argon)
 	}{
 		{"time=0", func(a *pb.Argon) { a.Time = 0 }},
-		{"time=too-big", func(a *pb.Argon) { a.Time = _Argon_maxTime + 1 }},
+		{"time=too-big", func(a *pb.Argon) { a.Time = _ArgonMaxTime + 1 }},
 		{"mem=0", func(a *pb.Argon) { a.Mem = 0 }},
-		{"mem=too-big", func(a *pb.Argon) { a.Mem = _Argon_maxMem + 1 }},
+		{"mem=too-big", func(a *pb.Argon) { a.Mem = _ArgonMaxMem + 1 }},
 		{"proc=0", func(a *pb.Argon) { a.Proc = 0 }},
-		{"proc=too-big", func(a *pb.Argon) { a.Proc = _Argon_maxProc + 1 }},
+		{"proc=too-big", func(a *pb.Argon) { a.Proc = _ArgonMaxProc + 1 }},
 		{"salt=empty", func(a *pb.Argon) { a.Salt = nil }},
-		{"salt=too-short", func(a *pb.Argon) { a.Salt = make([]byte, _Argon_minSalt-1) }},
-		{"salt=too-long", func(a *pb.Argon) { a.Salt = make([]byte, _Argon_maxSalt+1) }},
+		{"salt=too-short", func(a *pb.Argon) { a.Salt = make([]byte, _ArgonMinSalt-1) }},
+		{"salt=too-long", func(a *pb.Argon) { a.Salt = make([]byte, _ArgonMaxSalt+1) }},
 	}
 
 	for _, c := range cases {
