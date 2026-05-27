@@ -517,7 +517,7 @@ func NewDecryptor(sk *PrivateKey, senderPk *PublicKey, rd io.Reader, wr io.Write
 		return nil, fmt.Errorf("decrypt: header decode: %w", err)
 	}
 
-	if d.ChunkSize == 0 || d.ChunkSize >= _maxChunkSize {
+	if d.ChunkSize == 0 || d.ChunkSize > _maxChunkSize {
 		return nil, fmt.Errorf("decrypt: invalid chunkSize %d", d.ChunkSize)
 	}
 

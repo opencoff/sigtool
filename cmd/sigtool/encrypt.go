@@ -81,7 +81,7 @@ func encrypt(args []string) {
 		n := len(args)
 		infile, args = args[n-1], args[:n-1]
 		if infile != "-" {
-			inf := mustOpen(infile, os.O_RDONLY)
+			inf = mustOpen(infile, os.O_RDONLY)
 			defer inf.Close()
 
 			infd = inf
@@ -231,11 +231,14 @@ func sameFile(infd *os.File, outfn string) (bool, os.FileMode) {
 	var ist, ost os.FileInfo
 	var err error
 
-	if ost, err = os.Stat(outfn); err != nil {
-		Die("can't stat %s: %s", outfn, err)
-	}
 	if ist, err = infd.Stat(); err != nil {
 		Die("can't stat %s: %s", infd.Name(), err)
+	}
+	if ost, err = os.Stat(outfn); err != nil {
+		if os.IsNotExist(err) {
+			return false, ist.Mode()
+		}
+		Die("can't stat %s: %s", outfn, err)
 	}
 
 	if os.SameFile(ist, ost) {

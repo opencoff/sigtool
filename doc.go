@@ -33,4 +33,4 @@
 // files to any recipient identified by their comment in `~/.ssh/authorized_keys`.
 package sigtool
 
-//go:generate ./gen-proto.sh
+//go:generate ./gen-proto.sh -v

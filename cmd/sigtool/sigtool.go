@@ -148,7 +148,18 @@ func maybeGetPw(nopw bool, envpw string, repeat bool) func() ([]byte, error) {
 	var err error
 
 	if len(envpw) > 0 {
-		pws = os.Getenv(envpw)
+		var ok bool
+		pws, ok = os.LookupEnv(envpw)
+		if !ok {
+			return func() ([]byte, error) {
+				return nil, fmt.Errorf("environment variable %s is not set", envpw)
+			}
+		}
+		if len(pws) == 0 {
+			return func() ([]byte, error) {
+				return nil, fmt.Errorf("environment variable %s is empty; use --no-password for empty passphrases", envpw)
+			}
+		}
 	} else {
 		pws, err = utils.Askpass("Enter passphrase for private key", repeat)
 		if err != nil {

@@ -272,6 +272,9 @@ func parseOpenSSHPrivateKey(data []byte, getpw func() ([]byte, error)) (*Private
 	switch {
 	// OpenSSH supports bcrypt KDF w/ AES256-CBC or AES256-CTR mode
 	case w.KdfName == "bcrypt" && w.CipherName == "aes256-cbc":
+		if getpw == nil {
+			return nil, ErrIncorrectPassword
+		}
 		pw, err := getpw()
 		if err != nil {
 			return nil, err
@@ -291,6 +294,9 @@ func parseOpenSSHPrivateKey(data []byte, getpw func() ([]byte, error)) (*Private
 		encrypted = true
 
 	case w.KdfName == "bcrypt" && w.CipherName == "aes256-ctr":
+		if getpw == nil {
+			return nil, ErrIncorrectPassword
+		}
 		pw, err := getpw()
 		if err != nil {
 			return nil, err

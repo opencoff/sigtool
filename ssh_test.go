@@ -273,4 +273,17 @@ func TestSSHPrivateKeyEncrypted(t *testing.T) {
 	assert(err != nil, "nil getpw should surface an error")
 }
 
+func TestSSHPrivateKeyEncryptedNilGetpwDoesNotPanic(t *testing.T) {
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("encrypted OpenSSH key with nil getpw panicked: %v", r)
+		}
+	}()
+
+	_, err := ParsePrivateKey([]byte(sshPrivateKeyEncrypted), nil)
+	if err == nil {
+		t.Fatal("encrypted OpenSSH key with nil getpw unexpectedly parsed")
+	}
+}
+
 // vim: noexpandtab:ts=8:sw=8:tw=92:

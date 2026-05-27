@@ -88,7 +88,7 @@ func decrypt(args []string) {
 	if len(args) > 1 {
 		infile = args[1]
 		if infile != "-" {
-			inf := mustOpen(infile, os.O_RDONLY)
+			inf = mustOpen(infile, os.O_RDONLY)
 			defer inf.Close()
 
 			infd = inf

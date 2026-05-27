@@ -15,8 +15,12 @@ package sigtool
 
 import (
 	"bytes"
+	"crypto/sha3"
+	"errors"
 	"fmt"
 	"testing"
+
+	"github.com/opencoff/sigtool/internal/pb"
 )
 
 type Buffer struct {
@@ -52,6 +56,51 @@ func (b *Buffer) Read(z []byte) (int, error) {
 
 func (b *Buffer) Close() error {
 	return nil
+}
+
+func encryptHeaderForTest(t *testing.T, h *pb.Header) []byte {
+	t.Helper()
+
+	varSize := h.Size()
+	buffer := make([]byte, _FixedHdrLen+varSize+_Sha3Size)
+	fixHdr := buffer[:_FixedHdrLen]
+	varHdr := buffer[_FixedHdrLen : _FixedHdrLen+varSize]
+	sumHdr := buffer[_FixedHdrLen+varSize:]
+
+	copy(fixHdr, []byte(_Magic))
+	fixHdr[_MagicLen] = _SigtoolVersion
+	enc32(fixHdr[_MagicLen+1:], uint32(varSize))
+
+	if _, err := h.MarshalTo(varHdr); err != nil {
+		t.Fatalf("marshal test header: %s", err)
+	}
+
+	d := sha3.New512()
+	_, _ = d.Write(buffer[:_FixedHdrLen+varSize])
+	_ = d.Sum(sumHdr[:0])
+
+	return buffer
+}
+
+func TestDecryptAcceptsMaxChunkSizeHeader(t *testing.T) {
+	assert := newAsserter(t)
+
+	rd := bytes.NewReader(encryptHeaderForTest(t, &pb.Header{
+		ChunkSize: _maxChunkSize,
+		Salt:      make([]byte, _SaltSize),
+	}))
+	wr := newBuffer("wr")
+	sk, err := NewPrivateKey(t.Name())
+	assert(err == nil, "SK gen failed: %s", err)
+
+	_, err = NewDecryptor(sk, nil, rd, wr)
+	if errors.Is(err, ErrNoWrappedKeys) {
+		return
+	}
+	if err != nil {
+		t.Fatalf("max chunk-size header rejected before key validation: %s", err)
+	}
+	t.Fatal("max chunk-size header unexpectedly constructed a decryptor")
 }
 
 // one sender, one receiver no verification of sender
