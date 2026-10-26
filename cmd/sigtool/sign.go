@@ -71,7 +71,7 @@ Options:
 	if outf != "-" {
 		var opts uint32
 		if force {
-			opts |= fio.OPT_OVERWRITE
+			opts |= fio.OptOverwrite
 		}
 		sf, err := fio.NewSafeFile(outf, opts, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0644)
 		if err != nil {

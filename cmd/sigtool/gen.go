@@ -96,7 +96,7 @@ func writeFile(fn string, buf []byte, force bool, perm os.FileMode) {
 	var opts uint32
 
 	if force {
-		opts |= fio.OPT_OVERWRITE
+		opts |= fio.OptOverwrite
 	}
 	sf, err := fio.NewSafeFile(fn, opts, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, perm)
 	if err != nil {

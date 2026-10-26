@@ -251,8 +251,7 @@ needs_regen() {
     local vtgo=${base}_vtproto.pb.go
 
     [ -f $pbgo -a  -f $vtgo ]          || return 0
-    [ $fn -nt $pbgo -o $fn -nt $vtgo ] && return 0
-    return 1
+    return 0
 }
 
 # protobuf gen

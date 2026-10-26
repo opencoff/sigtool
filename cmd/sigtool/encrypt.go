@@ -125,7 +125,7 @@ func encrypt(args []string) {
 
 		var opts uint32
 		if force {
-			opts |= fio.OPT_OVERWRITE
+			opts |= fio.OptOverwrite
 		}
 		sf, err := fio.NewSafeFile(outfile, opts, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, mode)
 		if err != nil {
